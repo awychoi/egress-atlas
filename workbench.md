@@ -1,6 +1,6 @@
 ---
 treatment: hero
-order: 20
+order: 10
 kicker: Pi-hole · SwiftUI + Metal
 banner: docs/assets/screenshots/egress-atlas.png
 banner_alt: Egress Atlas native macOS app showing the network index, live DNS globe and query feed.
