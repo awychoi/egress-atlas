@@ -1,0 +1,41 @@
+# macOS
+.DS_Store
+
+# SwiftPM / Xcode build output
+.build/
+build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+# App build output and local captures
+macos/dist/
+renders/
+macos/screenshots/
+
+# Local archives of prototypes and earlier apps
+/archive/
+
+# Local agent notes
+/AGENTS.md
+
+# Local credentials
+.env
+.env.local
+.env.*.local
+brand-identity/
+
+# Signing material — never commit keys or provisioning profiles
+*.pem
+*.key
+*.p12
+*.pfx
+*.p8
+*.cer
+*.crt
+*.mobileprovision
+*.provisionprofile
+
+# Local logs
+*.log

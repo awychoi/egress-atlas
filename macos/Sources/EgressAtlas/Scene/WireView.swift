@@ -1,0 +1,111 @@
+import Foundation
+import simd
+
+/// Port of app/src/lab/WireView.js. The curve leaves the shell along the
+/// device normal, splays, then dives to the destination. The signal colour and
+/// pulse are evaluated on the CPU per vertex so the whole 49-wire field is a
+/// single additive line batch.
+final class WireView {
+    var edgeId: String = ""
+    unowned var deviceView: DeviceView!
+    unowned var nodeView: NodeView!
+    let offset: Float
+    var tone: DNSStatus
+    var curve: CatmullRom?
+    var end = Vec3.zero
+    var tangent = Vec3(0, 0, -1)
+
+    var dim: Float = 1
+    var facing: Float = 1
+    var highlight: Float = 0
+    var hidden = false
+    var signalActive = false
+    /// Fraction of the curve currently drawn. Normal wires are 1; the
+    /// reappearance pulse grows a wire from the device to its destination.
+    var reveal: Float = 1
+
+    private var points: [Vec3] = []
+    private(set) var controlPoints: [Vec3] = []
+
+    init(offset: Float, tone: DNSStatus) {
+        self.offset = offset
+        self.tone = tone
+    }
+
+    func setGlobePath(from: Vec3, to: Vec3, normal: Vec3, globeRadius: Float) {
+        let fromV = from
+        let toV = to
+        let n = normal.normalized
+        let dir = toV - fromV
+        let dist = max(0.001, dir.length)
+        let unit = dir.normalized
+
+        var side = unit.cross(n)
+        if side.lengthSq < 1e-4 { side = Vec3(1, 0, 0) }
+        side = side.normalized
+        let sway = (offset * 0.618).truncatingRemainder(dividingBy: 1)
+        side = side * ((sway - 0.5) * 2 * (0.32 + min(1.4, dist * 0.08)))
+
+        let p0 = fromV + n * 0.08
+        var p1 = fromV + n * 0.95 + side + unit * min(0.9, dist * 0.08)
+        var p2 = toV - unit * min(1.1, dist * 0.22)
+        let p3 = toV
+        let maxRadius = globeRadius * 0.92
+        if p1.length > maxRadius { p1 = p1.withLength(maxRadius) }
+        if p2.length > maxRadius { p2 = p2.withLength(maxRadius) }
+
+        let control = [p0, p1, p2, p3]
+        controlPoints = control
+        let curve = CatmullRom(points: control, closed: false,
+                               curveType: "centripetal", tension: 0.5)
+        self.curve = curve
+        end = p3
+        var t = curve.tangentAt(1)
+        if t.lengthSq < 0.1 { t = unit }
+        tangent = t.normalized
+        points = (0...96).map { curve.pointAt(Float($0) / 96) }
+    }
+
+    func snapshotCurve() -> [Vec3] { points }
+
+    func setDim(_ dim: Float) { self.dim = max(0, dim) }
+    func setFacing(_ facing: Float) { self.facing = max(0.06, min(1, facing)) }
+    func setHighlight(_ highlight: Float) { self.highlight = max(0, min(1, highlight)) }
+    func setVisible(_ visible: Bool) { hidden = !visible }
+    func setSignalActive(_ active: Bool) { signalActive = active }
+
+    func appendDraw(_ draw: DrawList, elapsed: Float) {
+        guard !hidden, reveal > 0.001, points.count > 1, curve != nil else { return }
+        let progress = (elapsed * 0.075 + offset).truncatingRemainder(dividingBy: 1)
+        let pulse: Float = signalActive ? 0.015 : 0.32 * dim
+        let opacity = (signalActive ? 0.68 : 0.9) * dim * facing * (1 + highlight * 1.8)
+        let a = Palette.signal.linear
+        let b = (tone == .blocked ? Palette.coral : Palette.gold).linear
+        let white = Vec3(1.0, 0.95, 0.84)
+        let segmentCount = max(1, min(points.count - 1,
+                                      Int((Float(points.count - 1) * clamp01(reveal)).rounded(.up))))
+
+        for i in 0..<segmentCount {
+            let t0 = Float(i) / 96
+            let t1 = Float(i + 1) / 96
+            draw.lines.append(LineVertex(points[i], wireColor(t0, a, b, white, progress, pulse, opacity, elapsed)))
+            draw.lines.append(LineVertex(points[i + 1], wireColor(t1, a, b, white, progress, pulse, opacity, elapsed)))
+        }
+    }
+
+    private func wireColor(_ vT: Float, _ a: SIMD3<Float>, _ b: SIMD3<Float>,
+                           _ white: Vec3, _ progress: Float, _ pulse: Float,
+                           _ opacity: Float, _ elapsed: Float) -> SIMD4<Float> {
+        var d = (vT - progress).truncatingRemainder(dividingBy: 1)
+        if d < 0 { d += 1 }
+        d = min(d, 1 - d)
+        let head = exp(-d * d * 220) * pulse
+        let trail = exp(-d * 8) * pulse * 0.18
+        let base = 0.17 + 0.045 * sin(vT * 34 - elapsed * 1.6)
+        let alpha = min(1, (base + head + trail) * opacity)
+        var col = a + (b - a) * smoothstep(0.58, 1.0, vT)
+        col = col + (white - col) * min(head, 1) * 0.75
+        return SIMD4(col * (0.85 + head * 2.6), alpha)
+    }
+
+}
