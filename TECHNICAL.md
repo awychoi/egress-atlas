@@ -24,7 +24,7 @@ The history window runs from one hour to seven days and follows each body's `las
 
 The renderer uses a linear HDR `rgba16Float` scene with 4× MSAA, double-buffered post targets and a final `bgra8Unorm` pass. Depth of field derives from the globe's front intersection, so it needs no second scene pass; the focus ray is reconstructed through the same lens shift as the scene projection, so panning the globe does not push it into the far blur. Bloom runs a five-mip chain capped at 960×540 device pixels. ACES tone mapping and sRGB transfer are followed by vignette and grain, and render scale is capped at 1.75×.
 
-The field includes a dotted shell, dust, a latitude/longitude grid, three armillary rings, horizon ticks, a star-dome shader, atmosphere and glass shells, and a coral/gold limb sprite. Device and destination geometry, wire curves and hit shaders are native Metal.
+The field includes a dotted shell, dust, a latitude/longitude grid, three armillary rings, horizon ticks, a star-dome shader, atmosphere and glass shells, and a coral/gold limb sprite. Device and destination geometry, wire curves and hit shaders are native Metal. The star-dome shader and the ambient dust are rendered against a fixed sky view captured from the opening camera; only the instrument sphere and its grid, orbits and surface dust use the live camera. Orbiting, panning or zooming therefore moves the globe through the surrounding space instead of dragging the space with it.
 
 ## Pi-hole source
 

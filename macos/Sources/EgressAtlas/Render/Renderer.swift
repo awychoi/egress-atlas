@@ -103,6 +103,7 @@ final class GlobeRenderer: NSObject, MTKViewDelegate {
     private var stageLineBuffer = DynamicBuffer(stride: MemoryLayout<LineVertex>.stride, label: "stage lines")
     private var pointBuffer = DynamicBuffer(stride: MemoryLayout<PointVertex>.stride, label: "points")
     private var stagePointBuffer = DynamicBuffer(stride: MemoryLayout<PointVertex>.stride, label: "stage points")
+    private var ambientPointBuffer = DynamicBuffer(stride: MemoryLayout<PointVertex>.stride, label: "ambient points")
     private var spriteBuffer = DynamicBuffer(stride: MemoryLayout<SpriteInstance>.stride, label: "sprites")
     private var rawBuffer = DynamicBuffer(stride: MemoryLayout<TriangleVertex>.stride, label: "triangles")
     private var meshBuffers = (0..<ShapeID.allCases.count).map {
@@ -111,6 +112,11 @@ final class GlobeRenderer: NSObject, MTKViewDelegate {
 
     private var frameIndex = 0
     private var frameDiagnosticCounter = 0
+    /// The opening camera becomes the fixed frame for deep space. Anchoring
+    /// the backdrop and ambient dust here means dragging, orbiting, zooming or
+    /// panning the instrument sphere never drags the surrounding space with it.
+    private var skyCamera: Camera?
+    private var skyStageScale: Float = 1
     private let timingLock = NSLock()
     private var timingWallSum: Double = 0
     private var timingGPUSum: Double = 0
@@ -466,7 +472,15 @@ final class GlobeRenderer: NSObject, MTKViewDelegate {
 
     private func frameUniforms(state: RenderState, renderSize: CGSize,
                                shake: Vec3) -> FrameUniforms {
-        var camera = state.camera
+        frameUniforms(camera: state.camera, elapsed: state.elapsed,
+                      stageScale: state.stageScale, backdropYaw: state.backdropYaw,
+                      renderSize: renderSize, shake: shake)
+    }
+
+    private func frameUniforms(camera base: Camera, elapsed: Float,
+                               stageScale: Float, backdropYaw: Float,
+                               renderSize: CGSize, shake: Vec3) -> FrameUniforms {
+        var camera = base
         camera.position += shake
         camera.aspect = Float(renderSize.width / max(1, renderSize.height))
         let view = camera.viewMatrix
@@ -484,23 +498,63 @@ final class GlobeRenderer: NSObject, MTKViewDelegate {
             cameraRight: SIMD4(right, 1),
             cameraUp: SIMD4(up, 1),
             cameraForward: SIMD4(forward, 1),
-            misc: SIMD4(state.elapsed, pointScale, Float(camera.aspect), tanHalf),
-            stage: SIMD4(state.stageScale, state.backdropYaw, camera.near, camera.far)
+            misc: SIMD4(elapsed, pointScale, Float(camera.aspect), tanHalf),
+            stage: SIMD4(stageScale, backdropYaw, camera.near, camera.far)
         )
+    }
+
+    /// Keep one projection for deep space. The aspect follows window resizes,
+    /// but the eye and look direction never move with the globe controls.
+    private func fixedSkyFrame(camera base: Camera, stageScale: Float,
+                               elapsed: Float, backdropYaw: Float,
+                               renderSize: CGSize) -> FrameUniforms {
+        let aspect = Float(renderSize.width / max(1, renderSize.height))
+        var camera: Camera
+        if let existing = skyCamera {
+            camera = existing
+            camera.aspect = aspect
+            skyCamera = camera
+        } else {
+            camera = base
+            camera.pan = .zero
+            camera.aspect = aspect
+            skyCamera = camera
+            skyStageScale = max(0.0001, stageScale)
+        }
+        return frameUniforms(camera: camera, elapsed: elapsed,
+                             stageScale: skyStageScale, backdropYaw: backdropYaw,
+                             renderSize: renderSize, shake: .zero)
     }
 
     private func encodeScene(state: RenderState, encoder: MTLRenderCommandEncoder,
                              frame: FrameUniforms, renderSize: CGSize) {
         let draw = state.drawList
+        let skyFrame = fixedSkyFrame(camera: state.camera, stageScale: state.stageScale,
+                                     elapsed: state.elapsed, backdropYaw: state.backdropYaw,
+                                     renderSize: renderSize)
+        var frameCopy = frame
 
         encoder.setCullMode(.none)
-        // Star backdrop (opaque, no depth).
+        // Star backdrop (opaque, no depth). This uses the fixed sky frame, so
+        // it is anchored to the viewport rather than the globe's camera.
         encoder.setDepthStencilState(depthAlways)
         encoder.setRenderPipelineState(backgroundPipeline)
-        var frameCopy = frame
-        encoder.setVertexBytes(&frameCopy, length: MemoryLayout<FrameUniforms>.stride, index: 0)
-        encoder.setFragmentBytes(&frameCopy, length: MemoryLayout<FrameUniforms>.stride, index: 0)
+        var skyCopy = skyFrame
+        encoder.setVertexBytes(&skyCopy, length: MemoryLayout<FrameUniforms>.stride, index: 0)
+        encoder.setFragmentBytes(&skyCopy, length: MemoryLayout<FrameUniforms>.stride, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+
+        // Deep-space dust shares that fixed frame. It is additive and drawn
+        // before the instrument sphere, so dragging the globe moves the globe
+        // through the dust instead of dragging the dust with it.
+        if !draw.ambientPoints.isEmpty, let buffer = update(ambientPoints: draw.ambientPoints) {
+            encoder.setRenderPipelineState(pointPipeline)
+            encoder.setVertexBuffer(buffer, offset: 0, index: 0)
+            var transform = LineUniforms(transform: Mat4.scale(Vec3(repeating: skyStageScale)))
+            encoder.setVertexBytes(&transform, length: MemoryLayout<LineUniforms>.stride, index: 1)
+            encoder.setVertexBytes(&skyCopy, length: MemoryLayout<FrameUniforms>.stride, index: 2)
+            encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: draw.ambientPoints.count)
+        }
 
         // The hollow instrument sphere: warm atmosphere, glass, and the limb.
         encoder.setDepthStencilState(depthNoWrite)
@@ -726,6 +780,9 @@ final class GlobeRenderer: NSObject, MTKViewDelegate {
     }
     private func update(stagePoints: [PointVertex]) -> MTLBuffer? {
         stagePointBuffer.update(stagePoints, device: device, frame: frameIndex)
+    }
+    private func update(ambientPoints: [PointVertex]) -> MTLBuffer? {
+        ambientPointBuffer.update(ambientPoints, device: device, frame: frameIndex)
     }
     private func update(sprites: [SpriteInstance]) -> MTLBuffer? {
         spriteBuffer.update(sprites, device: device, frame: frameIndex)

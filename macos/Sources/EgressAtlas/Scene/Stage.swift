@@ -183,7 +183,9 @@ final class GlobeStage {
             horizonPrev = point
         }
 
-        // Drifting dust.
+        // Drifting dust. This is the far space layer, not part of the globe:
+        // the renderer projects it against the fixed sky view so it stays put
+        // while the user drags the globe around.
         for p in orbitDust {
             let theta = p.theta + elapsed * p.speed
             let wobble = sin(elapsed * 0.06 + p.phase) * 0.08
@@ -191,7 +193,7 @@ final class GlobeStage {
             let x = cos(theta) * p.rr * dist
             let z = sin(theta) * p.rr * dist
             let y = p.y * dist + sin(elapsed * 0.09 + p.phase) * 0.2
-            draw.stagePoints.append(PointVertex(Vec3(x, y, z), rgba(p.color, p.alpha), size: p.size))
+            draw.ambientPoints.append(PointVertex(Vec3(x, y, z), rgba(p.color, p.alpha), size: p.size))
         }
 
         // Atmosphere shells and glass. The web scales its stage root by R/6;

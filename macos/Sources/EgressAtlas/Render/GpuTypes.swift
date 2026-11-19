@@ -225,6 +225,10 @@ final class DrawList {
     var stageLines: [LineVertex] = []
     var points: [PointVertex] = []
     var stagePoints: [PointVertex] = []
+    /// Free-floating space dust. It is drawn against the fixed sky view rather
+    /// than the live globe camera, so orbiting, panning or zooming the globe
+    /// leaves the surrounding space still.
+    var ambientPoints: [PointVertex] = []
     var sprites: [SpriteInstance] = []
     var limbSprite: SpriteInstance?
     var meshBatches: [[MeshInstance]] = Array(repeating: [], count: ShapeID.allCases.count)
@@ -246,6 +250,7 @@ final class DrawList {
         stageLines.removeAll(keepingCapacity: true)
         points.removeAll(keepingCapacity: true)
         stagePoints.removeAll(keepingCapacity: true)
+        ambientPoints.removeAll(keepingCapacity: true)
         sprites.removeAll(keepingCapacity: true)
         limbSprite = nil
         for i in meshBatches.indices { meshBatches[i].removeAll(keepingCapacity: true) }
