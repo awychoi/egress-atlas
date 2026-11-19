@@ -22,6 +22,7 @@ final class GlobeMTKView: MTKView {
     weak var runtime: AtlasRuntime?
     private var clickOrigin: CGPoint?
     private var dragOrigin: CGPoint?
+    private var panOrigin: CGPoint?
     private var windowOriginAtMouseDown: CGPoint?
     private var tracking: NSTrackingArea?
     private var occlusionObserver: NSObjectProtocol?
@@ -402,15 +403,33 @@ final class GlobeMTKView: MTKView {
     override func rightMouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         clickOrigin = nil
-        runtime?.orbit(dx: 0, dy: 0, viewSize: bounds.size)
+        dragOrigin = nil
+        windowOriginAtMouseDown = nil
+        panOrigin = topPoint(event)
+        runtime?.setHovered(nil)
+        runtime?.beginPan()
     }
 
     override func rightMouseDragged(with event: NSEvent) {
-        runtime?.orbit(dx: event.deltaX, dy: event.deltaY, viewSize: bounds.size)
+        let p = topPoint(event)
+        // Use view-space deltas rather than event.deltaY so the globe follows
+        // the pointer: dragging down moves it down, dragging up moves it up.
+        if let previous = panOrigin {
+            runtime?.pan(dx: p.x - previous.x, dy: -(p.y - previous.y),
+                         viewSize: bounds.size)
+        }
+        panOrigin = p
+        NSCursor.closedHand.set()
     }
 
     override func rightMouseUp(with event: NSEvent) {
-        runtime?.endDrag()
+        panOrigin = nil
+        runtime?.endPan()
+        let p = topPoint(event)
+        let overChrome = runtime?.settingsOpen == true || isOverChrome(p, size: bounds.size)
+        let pick = overChrome ? nil : runtime?.pick(at: p, viewSize: bounds.size)
+        runtime?.setHovered(pick)
+        updateCursor(at: p, pick: pick)
     }
 
     override func otherMouseDown(with event: NSEvent) {

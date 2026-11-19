@@ -18,18 +18,29 @@ struct CommandPalette: View {
     private var allItems: [Item] {
         var items: [Item] = []
         for device in runtime.network.devices {
+            let alias = runtime.deviceAlias(device)
+            let name = runtime.deviceDisplayName(device)
+            let address = runtime.deviceAddressText(device)
+            let detail = [device.kind, address, "\(Format.count(device.liveQueries)) queries"]
+                .compactMap { $0 }.joined(separator: " · ")
             items.append(Item(
-                id: "device:\(device.id)", kind: 0, title: device.name,
-                detail: "\(device.kind) · \(device.ip) · \(Format.count(device.liveQueries)) queries",
-                haystack: "\(device.name) \(device.kind) \(device.ip) \(device.os)".lowercased(),
+                id: "device:\(device.id)", kind: 0, title: name,
+                detail: detail,
+                haystack: "\(device.name) \(device.kind) \(device.ip) \(device.os) \(alias ?? "")".lowercased(),
                 blocked: false
             ))
         }
         for destination in runtime.windowVisibleDestinations() {
+            let alias = runtime.destinationAlias(destination)
+            let name = runtime.destinationDisplayName(destination)
+            let original = runtime.destinationOriginalText(destination)
+            let detail = [destination.category, destination.status.rawValue,
+                          "\(destination.devices.count) device\(destination.devices.count == 1 ? "" : "s")",
+                          original].compactMap { $0 }.joined(separator: " · ")
             items.append(Item(
-                id: "destination:\(destination.id)", kind: 1, title: destination.domain,
-                detail: "\(destination.category) · \(destination.status.rawValue) · \(destination.devices.count) device\(destination.devices.count == 1 ? "" : "s")",
-                haystack: "\(destination.domain) \(destination.category) \(destination.status.rawValue)".lowercased(),
+                id: "destination:\(destination.id)", kind: 1, title: name,
+                detail: detail,
+                haystack: "\(destination.domain) \(alias ?? "") \(destination.category) \(destination.status.rawValue)".lowercased(),
                 blocked: destination.status == .blocked
             ))
         }

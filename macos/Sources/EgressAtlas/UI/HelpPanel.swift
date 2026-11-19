@@ -19,11 +19,19 @@ struct HelpPanel: View {
                         spacing: 1
                     ) {
                         gesture("Drag", "Orbit the globe")
+                        gesture("Right-drag", "Move the globe freely")
                         gesture("Scroll", "Zoom the field")
                         gesture("Click", "Open details")
                         gesture("Double-click", "Fly to a node")
                     }
                     .padding(.top, 6)
+
+                    Text("Right-drag shifts the globe around the viewport. With auto-orbit on, the globe keeps spinning on its own axis while it moves.")
+                        .font(.atlasSans(8.5, .regular))
+                        .lineSpacing(1.5)
+                        .foregroundColor(Palette.dim.color)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 8)
 
                     Text(runtime.windowDragSpinsGlobe
                          ? "Moving the window also orbits the field."
@@ -33,6 +41,13 @@ struct HelpPanel: View {
                         .foregroundColor(Palette.dim.color)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 8)
+
+                    Text("Select a device or destination to set a local alias in the inspector. Aliases never leave this Mac; Display → Show alias and address puts the original IP or domain back beside them.")
+                        .font(.atlasSans(8.5, .regular))
+                        .lineSpacing(1.5)
+                        .foregroundColor(Palette.dim.color)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 10)
 
                     legendSection
                         .padding(.top, 12)

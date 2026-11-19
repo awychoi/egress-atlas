@@ -1,8 +1,8 @@
 import Foundation
 
-/// Durable display and motion preferences. Source connection state stays in
-/// `PiHoleCredentials` because the password belongs in the Keychain; these are
-/// the options the Settings panel should restore on the next launch.
+/// Durable display, motion and local-alias preferences. Source connection
+/// state stays in `PiHoleCredentials` because the password belongs in the
+/// Keychain; these are the options the app restores on the next launch.
 ///
 /// Every getter returns `nil` when the key is absent so the runtime can apply
 /// its own context-sensitive default (for example, auto-orbit follows the
@@ -22,6 +22,9 @@ enum AtlasPreferences {
     private static let recoilKey = "atlas.nodeRecoil"
     private static let speedKey = "atlas.studySpeed"
     private static let hitPlaneKey = "atlas.hitPlane"
+    private static let deviceAliasesKey = "atlas.deviceAliases"
+    private static let destinationAliasesKey = "atlas.destinationAliases"
+    private static let showAliasWithAddressKey = "atlas.showAliasWithAddress"
 
     static var labelMode: LabelMode? {
         get {
@@ -77,6 +80,27 @@ enum AtlasPreferences {
         set { setOptionalBool(newValue, forKey: hitPlaneKey) }
     }
 
+    /// Local, user-authored display names for devices, keyed by IP because the
+    /// live source rebuilds the graph from a fresh Pi-hole snapshot (and its
+    /// synthetic device ids are not stable across populations).
+    static var deviceAliases: [String: String] {
+        get { aliases(deviceAliasesKey) }
+        set { setAliases(newValue, forKey: deviceAliasesKey) }
+    }
+
+    /// Local display names for DNS destinations, keyed by domain.
+    static var destinationAliases: [String: String] {
+        get { aliases(destinationAliasesKey) }
+        set { setAliases(newValue, forKey: destinationAliasesKey) }
+    }
+
+    /// When true, cards append the original IP/domain to an alias. The default
+    /// is alias-only, matching the compact index.
+    static var showAliasWithAddress: Bool? {
+        get { optionalBool(showAliasWithAddressKey) }
+        set { setOptionalBool(newValue, forKey: showAliasWithAddressKey) }
+    }
+
     static var speed: Float? {
         get {
             guard defaults.object(forKey: speedKey) != nil else { return nil }
@@ -97,5 +121,23 @@ enum AtlasPreferences {
     private static func setOptionalBool(_ value: Bool?, forKey key: String) {
         guard persists, let value else { return }
         defaults.set(value, forKey: key)
+    }
+
+    private static func aliases(_ key: String) -> [String: String] {
+        guard let data = defaults.data(forKey: key),
+              let decoded = try? JSONDecoder().decode([String: String].self, from: data) else {
+            return [:]
+        }
+        return decoded
+    }
+
+    private static func setAliases(_ value: [String: String], forKey key: String) {
+        guard persists else { return }
+        if value.isEmpty {
+            defaults.removeObject(forKey: key)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(value) else { return }
+        defaults.set(data, forKey: key)
     }
 }

@@ -69,8 +69,8 @@ struct NetworkRail: View {
                     .padding(.top, 8)
                 if metrics.showIndexCopy {
                     Text(index == 0
-                         ? "Blue orbs are devices on this network. Select one to trace its DNS paths."
-                         : "Gold is allowed, coral is blocked. Select a destination to see which devices use it.")
+                         ? "Blue orbs are devices on this network. Select one to trace its DNS paths or set an alias."
+                         : "Gold is allowed, coral is blocked. Select a destination to see its devices or set an alias.")
                         .font(.atlasSans(10.5, .regular))
                         .tracking(-0.05)
                         .lineSpacing(2)
@@ -226,6 +226,11 @@ struct DeviceIndexRow: View {
 
     private var qps: Float { runtime.source.getQps(device.id) }
     private var lastSeenText: String { Format.ago(device.lastSeen) }
+    private var displayName: String { runtime.deviceDisplayName(device) }
+    private var addressText: String? { runtime.deviceAddressText(device) }
+    private var subtitle: String {
+        [device.kind, addressText].compactMap { $0 }.joined(separator: " · ")
+    }
     private var maxQps: Float {
         max(1.2, runtime.network.devices.map { runtime.source.getQps($0.id) }.max() ?? 1)
     }
@@ -236,7 +241,7 @@ struct DeviceIndexRow: View {
                 .frame(width: 22, height: 22)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
-                    Text(device.name)
+                    Text(displayName)
                         .font(.atlasSans(12, .medium))
                         .tracking(-0.15)
                         .foregroundColor(selected ? Palette.text.color : Palette.text2.color)
@@ -251,10 +256,10 @@ struct DeviceIndexRow: View {
                             .overlay(RoundedRectangle(cornerRadius: 2).strokeBorder(Palette.signal.opacity(0.32), lineWidth: 1))
                     }
                 }
-                Text("\(device.kind) · \(device.ip)")
+                Text(subtitle)
+                    .font(.atlasMono(7, .regular))
                     .foregroundColor(Palette.dim.color)
-                .font(.atlasMono(7, .regular))
-                .lineLimit(1)
+                    .lineLimit(1)
             }
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 3) {
@@ -299,7 +304,8 @@ struct DeviceIndexRow: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
-        .accessibilityLabel("\(device.name), \(device.kind), \(device.ip), last seen \(lastSeenText)\(device.liveBlocked > 0 ? ", \(Format.count(device.liveBlocked)) blocked" : "")")
+        .accessibilityLabel("\(displayName), \(device.kind), \(addressText ?? device.ip), last seen \(lastSeenText)\(device.liveBlocked > 0 ? ", \(Format.count(device.liveBlocked)) blocked" : "")")
+        .help("\(device.name) · \(device.ip)")
     }
 }
 
@@ -312,19 +318,26 @@ struct DestinationIndexRow: View {
 
     private var blocked: Bool { destination.status == .blocked }
     private var accent: Color { blocked ? Palette.coral.color : Palette.gold.color }
+    private var displayName: String { runtime.destinationDisplayName(destination) }
+    private var originalText: String? { runtime.destinationOriginalText(destination) }
+    private var subtitle: String {
+        [destination.category,
+         "\(destination.devices.count) device\(destination.devices.count == 1 ? "" : "s")",
+         originalText].compactMap { $0 }.joined(separator: " · ")
+    }
 
     var body: some View {
         HStack(spacing: 9) {
             AtlasDestinationMark(color: accent)
                 .frame(width: 22, height: 22)
             VStack(alignment: .leading, spacing: 2) {
-                Text(destination.domain)
+                Text(displayName)
                     .font(.atlasSans(12, .medium))
                     .tracking(-0.15)
                     .foregroundColor(blocked ? Palette.coralHot.color : Palette.text2.color)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text("\(destination.category) · \(destination.devices.count) device\(destination.devices.count == 1 ? "" : "s")")
+                Text(subtitle)
                     .font(.atlasMono(7, .regular))
                     .foregroundColor(blocked ? Palette.coral.opacity(0.72) : Palette.dim.color)
                     .lineLimit(1)
@@ -363,7 +376,8 @@ struct DestinationIndexRow: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
-        .accessibilityLabel("\(destination.domain), \(destination.category), \(destination.status.rawValue)")
+        .accessibilityLabel("\(displayName), \(destination.domain), \(destination.category), \(destination.status.rawValue), \(destination.devices.count) devices")
+        .help(destination.domain)
     }
 
     private var maxDest: Float {

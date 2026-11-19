@@ -21,6 +21,8 @@ enum SelfTestTool {
         print("study checks failed=\(studyFailed)")
         let focusFailed = runtime.debugFocusChecks()
         print("focus checks failed=\(focusFailed)")
+        let interactionFailed = runtime.debugInteractionChecks()
+        print("interaction checks failed=\(interactionFailed)")
         let windowFailed = runtime.debugWindowChecks()
         print("window checks failed=\(windowFailed)")
         let liveFailed = runtime.debugLiveChecks()
@@ -245,6 +247,24 @@ enum SnapshotTool {
                 }
             }
         }
+        for i in args.indices where i + 1 < args.count {
+            if args[i] == "--alias-device" {
+                let parts = args[i + 1].split(separator: "=", maxSplits: 1)
+                if parts.count == 2,
+                   let device = runtime.network.deviceById[String(parts[0])] {
+                    runtime.setDeviceAlias(String(parts[1]), for: device)
+                }
+            } else if args[i] == "--alias-destination" {
+                let parts = args[i + 1].split(separator: "=", maxSplits: 1)
+                if parts.count == 2,
+                   let destination = runtime.network.destinationById[String(parts[0])] {
+                    runtime.setDestinationAlias(String(parts[1]), for: destination)
+                }
+            }
+        }
+        if args.contains("--show-both") {
+            runtime.setShowAliasWithAddress(true)
+        }
         if args.contains("--close-rails") {
             runtime.leftRailOpen = false
             runtime.rightRailOpen = false
@@ -343,13 +363,25 @@ enum SnapshotTool {
     }
 
     private static func applyCamera(args: [String], runtime: AtlasRuntime) {
-        guard let posString = value(after: "--camera", in: args) else { return }
-        let parts = posString.split(separator: ",").compactMap { Float($0) }
-        guard parts.count == 3 else { return }
-        let targetString = value(after: "--target", in: args) ?? "0,0.15,0"
-        let targetParts = targetString.split(separator: ",").compactMap { Float($0) }
-        let target = targetParts.count == 3 ? Vec3(targetParts[0], targetParts[1], targetParts[2]) : Vec3(0, 0.15, 0)
-        runtime.setCameraForSnapshot(position: Vec3(parts[0], parts[1], parts[2]), target: target)
+        if let posString = value(after: "--camera", in: args) {
+            let parts = posString.split(separator: ",").compactMap { Float($0) }
+            if parts.count == 3 {
+                let targetString = value(after: "--target", in: args) ?? "0,0.15,0"
+                let targetParts = targetString.split(separator: ",").compactMap { Float($0) }
+                let target = targetParts.count == 3
+                    ? Vec3(targetParts[0], targetParts[1], targetParts[2])
+                    : Vec3(0, 0.15, 0)
+                runtime.setCameraForSnapshot(position: Vec3(parts[0], parts[1], parts[2]),
+                                             target: target)
+            }
+        }
+        // Apply the lens shift last: setCameraForSnapshot recentres it.
+        if let panString = value(after: "--pan", in: args) {
+            let parts = panString.split(separator: ",").compactMap { Float($0) }
+            if parts.count == 2 {
+                runtime.setPanForSnapshot(SIMD2<Float>(parts[0], parts[1]))
+            }
+        }
     }
 
     private static func value(after flag: String, in args: [String]) -> String? {

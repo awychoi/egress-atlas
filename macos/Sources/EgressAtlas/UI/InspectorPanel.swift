@@ -38,9 +38,12 @@ struct InspectorPanel: View {
 
     private var title: String {
         switch selection {
-        case .device(let id): return runtime.network.deviceById[id]?.name ?? ""
-        case .destination(let id): return runtime.network.destinationById[id]?.domain ?? ""
-        case .path(_, let destinationId): return runtime.network.destinationById[destinationId]?.domain ?? ""
+        case .device(let id):
+            return runtime.network.deviceById[id].map { runtime.deviceDisplayName($0) } ?? ""
+        case .destination(let id):
+            return runtime.network.destinationById[id].map { runtime.destinationDisplayName($0) } ?? ""
+        case .path(_, let destinationId):
+            return runtime.network.destinationById[destinationId].map { runtime.destinationDisplayName($0) } ?? ""
         }
     }
 
@@ -163,9 +166,19 @@ struct InspectorPanel: View {
         let visibleDestinations = device.destinations.filter(\.windowVisible).count
         let qps = runtime.source.getQps(device.id)
         let recent = runtime.recentEvents(deviceId: device.id)
+        let displayName = runtime.deviceDisplayName(device)
+        let address = runtime.deviceAddressText(device)
+        var subtitleParts = [device.kind]
+        if let address { subtitleParts.append(address) }
+        if device.thisMac { subtitleParts.append("this mac") }
         return VStack(alignment: .leading, spacing: 0) {
-            titleBlock(subtitle: "\(device.kind) · \(device.ip)\(device.thisMac ? " · this mac" : "")\n\(device.os)",
-                       blocked: false, title: device.name)
+            titleBlock(subtitle: "\(subtitleParts.joined(separator: " · "))\n\(device.os)",
+                       blocked: false, title: displayName)
+            AliasEditor(runtime: runtime, original: device.ip,
+                        alias: runtime.deviceAlias(device)) { value in
+                runtime.setDeviceAlias(value, for: device)
+            }
+            .id("alias-device-\(device.id)")
             statsGrid([
                 ("Queries today", Format.count(device.liveQueries), false),
                 ("Blocked", Format.count(device.liveBlocked), device.liveBlocked > 0),
@@ -177,7 +190,7 @@ struct InspectorPanel: View {
                 ForEach(topDestinations(device), id: \.id) { edge in
                     InspectorRouteRow(
                         dot: edge.destination.status == .blocked ? Palette.coral.color : Palette.gold.color,
-                        title: edge.destination.domain,
+                        title: runtime.destinationDisplayName(edge.destination),
                         value: Format.count(edge.liveQueries),
                         fraction: barFraction(edge.liveQueries, upper: topMax(device))
                     ) {
@@ -191,7 +204,7 @@ struct InspectorPanel: View {
             VStack(alignment: .leading, spacing: 0) {
                 blockHeader("Recent queries", value: "\(recent.count)")
                 ForEach(recent.prefix(4)) { event in
-                    InspectorQueryRow(event: event) {
+                    InspectorQueryRow(runtime: runtime, event: event) {
                         runtime.select(.path(deviceId: event.deviceId, destinationId: event.destinationId))
                     }
                 }
@@ -215,12 +228,20 @@ struct InspectorPanel: View {
     private func destinationContent(_ destination: Destination) -> some View {
         let blocked = destination.status == .blocked
         let events = runtime.recentEvents(destinationId: destination.id)
+        let displayName = runtime.destinationDisplayName(destination)
+        let original = runtime.destinationOriginalText(destination)
+        let categoryLine = [destination.category, original].compactMap { $0 }.joined(separator: " · ")
         return VStack(alignment: .leading, spacing: 0) {
             titleBlock(
-                subtitle: "\(destination.category) · first seen \(Format.shortDate(destination.firstSeen))\n\(blocked ? "gravity list · denied before reply" : "avg reply \(destination.avgLatencyMs ?? 0) ms")",
+                subtitle: "\(categoryLine) · first seen \(Format.shortDate(destination.firstSeen))\n\(blocked ? "gravity list · denied before reply" : "avg reply \(destination.avgLatencyMs ?? 0) ms")",
                 blocked: blocked,
-                title: destination.domain
+                title: displayName
             )
+            AliasEditor(runtime: runtime, original: destination.domain,
+                        alias: runtime.destinationAlias(destination)) { value in
+                runtime.setDestinationAlias(value, for: destination)
+            }
+            .id("alias-destination-\(destination.id)")
             statsGrid([
                 ("Queries today", Format.count(destination.liveQueries), false),
                 ("Blocked", Format.count(destination.liveBlocked), true),
@@ -232,7 +253,7 @@ struct InspectorPanel: View {
                 ForEach(destination.edges.sorted { $0.liveQueries > $1.liveQueries }, id: \.id) { edge in
                     InspectorRouteRow(
                         dot: Palette.signal.color,
-                        title: edge.device.name,
+                        title: runtime.deviceDisplayName(edge.device),
                         value: Format.count(edge.liveQueries),
                         fraction: barFraction(edge.liveQueries, upper: destination.edges.map(\.liveQueries).max() ?? 1)
                     ) {
@@ -246,7 +267,7 @@ struct InspectorPanel: View {
             VStack(alignment: .leading, spacing: 0) {
                 blockHeader("Recent queries", value: "\(events.count)")
                 ForEach(events.prefix(4)) { event in
-                    InspectorQueryRow(event: event) {
+                    InspectorQueryRow(runtime: runtime, event: event) {
                         runtime.select(.path(deviceId: event.deviceId, destinationId: event.destinationId))
                     }
                 }
@@ -273,19 +294,32 @@ struct InspectorPanel: View {
         let blocked = destination.status == .blocked
         let events = runtime.recentEvents(deviceId: device.id, destinationId: destination.id)
         let share = Double(edge.liveQueries) / Double(max(1, device.liveQueries)) * 100
+        let deviceName = runtime.deviceDisplayName(device)
+        let deviceAddress = runtime.deviceAddressText(device)
+        let destinationName = runtime.destinationDisplayName(destination)
+        let destinationOriginal = runtime.destinationOriginalText(destination)
+        let via = [deviceName, deviceAddress].compactMap { $0 }.joined(separator: " · ")
+        let destinationLine = [destinationName, destinationOriginal].compactMap { $0 }.joined(separator: " · ")
         return VStack(alignment: .leading, spacing: 0) {
-            titleBlock(subtitle: "via \(device.name) · \(device.ip)\nlast seen \(Format.ago(edge.lastSeen))",
-                       blocked: blocked, title: destination.domain)
+            titleBlock(subtitle: "via \(via)\nlast seen \(Format.ago(edge.lastSeen))",
+                       blocked: blocked, title: destinationName)
+            AliasEditor(runtime: runtime, original: destination.domain,
+                        alias: runtime.destinationAlias(destination)) { value in
+                runtime.setDestinationAlias(value, for: destination)
+            }
+            .id("alias-path-\(destination.id)")
             HStack(spacing: 8) {
-                Text(device.name)
+                Text(deviceName)
                     .font(.atlasMono(8, .regular))
                     .foregroundColor(Palette.text2.color)
                 Text("→")
                     .font(.atlasMono(8, .regular))
                     .foregroundColor(Palette.faint.color)
-                Text(destination.domain)
+                Text(destinationLine)
                     .font(.atlasMono(8, .regular))
                     .foregroundColor(blocked ? Palette.coral.color : Palette.gold.color)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -303,7 +337,7 @@ struct InspectorPanel: View {
             VStack(alignment: .leading, spacing: 0) {
                 blockHeader("Recent on this path", value: "\(events.count)")
                 ForEach(events.prefix(6)) { event in
-                    InspectorQueryRow(event: event) {
+                    InspectorQueryRow(runtime: runtime, event: event) {
                         runtime.select(.path(deviceId: event.deviceId, destinationId: event.destinationId))
                     }
                 }
@@ -393,6 +427,7 @@ struct InspectorRouteRow: View {
 }
 
 struct InspectorQueryRow: View {
+    @ObservedObject var runtime: AtlasRuntime
     let event: QueryEvent
     var action: () -> Void
     @State private var hover = false
@@ -402,7 +437,7 @@ struct InspectorQueryRow: View {
             HStack(spacing: 7) {
                 Circle().fill(event.status == .blocked ? Palette.coral.color : Palette.gold.color)
                     .frame(width: 5, height: 5)
-                Text("\(event.device.name) → \(event.destination.domain)")
+                Text("\(runtime.deviceDisplayName(event.device)) → \(runtime.destinationDisplayName(event.destination))")
                     .font(.atlasMono(8, .regular))
                     .foregroundColor(Palette.text2.color)
                     .lineLimit(1)

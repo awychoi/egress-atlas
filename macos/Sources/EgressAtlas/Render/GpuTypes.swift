@@ -181,6 +181,7 @@ struct DofUniforms {
     var cameraUp: SIMD4<Float>
     var cameraForward: SIMD4<Float>
     var depthParams: SIMD4<Float> // tanHalfFov, globeRadius, near, far
+    var pan: SIMD4<Float> // lens-shift x, y, unused, unused
 }
 
 struct BrightUniforms {

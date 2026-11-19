@@ -204,6 +204,10 @@ struct Camera {
     var near: Float
     var far: Float
     var aspect: Float
+    /// Screen-space lens shift in NDC units. Right-dragging the field moves
+    /// the globe around the viewport without changing which point the camera
+    /// orbits, so auto-orbit keeps turning the globe on its own axis.
+    var pan: SIMD2<Float>
 
     init(
         position: Vec3 = Vec3(16.5, 12.4, 32.5),
@@ -211,7 +215,8 @@ struct Camera {
         fov: Float = 35,
         near: Float = 0.1,
         far: Float = 220,
-        aspect: Float = 1.6
+        aspect: Float = 1.6,
+        pan: SIMD2<Float> = .zero
     ) {
         self.position = position
         self.target = target
@@ -219,12 +224,22 @@ struct Camera {
         self.near = near
         self.far = far
         self.aspect = aspect
+        self.pan = pan
     }
 
     var forward: Vec3 { (target - position).normalized }
     var viewMatrix: Mat4 { Mat4.lookAt(eye: position, target: target, up: .up) }
     var projectionMatrix: Mat4 {
-        Mat4.perspectiveRightHand(fovY: fov * .pi / 180, aspect: aspect, near: near, far: far)
+        var projection = Mat4.perspectiveRightHand(fovY: fov * .pi / 180, aspect: aspect, near: near, far: far)
+        // Off-axis (lens-shift) projection. Adding -pan to the third column
+        // shifts the projected scene by pan because clip.w is -viewZ. This
+        // moves the globe without rotating the camera or changing the orbit
+        // target, so auto-orbit still spins it around its own axis.
+        if pan != .zero {
+            projection.columns.2.x -= pan.x
+            projection.columns.2.y -= pan.y
+        }
+        return projection
     }
     var viewProjection: Mat4 { projectionMatrix * viewMatrix }
 
@@ -246,9 +261,12 @@ struct Camera {
     }
 
     func rayDirection(ndc: SIMD2<Float>) -> Vec3 {
+        // Remove the lens shift before reconstructing the view ray so picking
+        // continues to line up with the moved globe.
+        let shifted = ndc - pan
         let tanFov = tan(fov * .pi / 360)
-        let x = ndc.x * aspect * tanFov
-        let y = ndc.y * tanFov
+        let x = shifted.x * aspect * tanFov
+        let y = shifted.y * tanFov
         let forward = forward
         let right = forward.cross(.up).normalized
         let up = right.cross(forward).normalized

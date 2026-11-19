@@ -114,6 +114,10 @@ struct CameraFlight {
     var fromDir = Vec3.forward
     var toDir = Vec3.forward
     var rotation = Quat(angle: 0, axis: .up)
+    /// The lens shift is eased with the flight so a panned globe glides back
+    /// to centre while the camera moves to its new subject.
+    var fromPan = SIMD2<Float>.zero
+    var toPan = SIMD2<Float>.zero
 }
 
 struct PathHalo {
@@ -281,6 +285,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
     private var flightDelayRemaining: Float = 0
     private var pendingFlight: (position: Vec3, target: Vec3, duration: Float, arc: Bool)?
     private var cameraDragging = false
+    private var panDragging = false
     private var tourClock: Float = 0
     private var tourPhase = 0
     private var tourInterval: Float = 0
@@ -292,6 +297,12 @@ final class AtlasRuntime: NSObject, ObservableObject {
     @Published var motionMode: MotionMode = .cinematic
     @Published var spinEnabled: Bool
     @Published var windowDragSpinsGlobe: Bool
+    /// Local aliases keyed by device IP and destination domain. These are
+    /// user-authored only; the Pi-hole client remains read-only.
+    @Published private(set) var deviceAliases: [String: String]
+    @Published private(set) var destinationAliases: [String: String]
+    /// Alias-only cards are the default; this appends the original address.
+    @Published private(set) var showAliasWithAddress: Bool
     @Published var recoilEnabled = true
     @Published var showHitGeometry = false
     @Published var autoTour = false
@@ -373,6 +384,9 @@ final class AtlasRuntime: NSObject, ObservableObject {
         reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         spinEnabled = AtlasPreferences.autoOrbit ?? !reducedMotion
         windowDragSpinsGlobe = AtlasPreferences.windowDragSpinsGlobe ?? false
+        deviceAliases = AtlasPreferences.deviceAliases
+        destinationAliases = AtlasPreferences.destinationAliases
+        showAliasWithAddress = AtlasPreferences.showAliasWithAddress ?? false
         motionMode = AtlasPreferences.motionMode ?? (reducedMotion ? .calm : .cinematic)
         labelMode = AtlasPreferences.labelMode ?? .selected
         recoilEnabled = AtlasPreferences.recoil ?? true
@@ -891,10 +905,12 @@ final class AtlasRuntime: NSObject, ObservableObject {
                 camera.position = flight.fromPos.lerp(flight.toPos, k)
             }
             camera.target = orbitTarget
+            camera.pan = flight.fromPan + (flight.toPan - flight.fromPan) * k
             if flight.t >= 1 {
                 camera.position = flight.toPos
                 orbitTarget = flight.toTarget
                 camera.target = orbitTarget
+                camera.pan = flight.toPan
                 cameraFlight = nil
             } else {
                 // CameraFlight is a value type: without writing the advanced
@@ -1872,10 +1888,19 @@ final class AtlasRuntime: NSObject, ObservableObject {
     func setCameraForSnapshot(position: Vec3, target: Vec3) {
         camera.position = position
         camera.target = target
+        camera.pan = .zero
         orbitTarget = target
         cameraFlight = nil
+        panDragging = false
         userZoomed = true
         settlePostForSnapshot()
+        rebuildDrawListForSnapshot()
+    }
+
+    /// Snapshot-only lever for the right-drag lens shift. Pan is a signed NDC
+    /// offset; +x moves right, +y moves up.
+    func setPanForSnapshot(_ pan: SIMD2<Float>) {
+        camera.pan = clampedPan(pan)
         rebuildDrawListForSnapshot()
     }
 
@@ -2084,6 +2109,132 @@ final class AtlasRuntime: NSObject, ObservableObject {
         camera.target = savedTarget
         trauma = savedTrauma
         settlePostForSnapshot()
+        return failed
+    }
+
+    /// Code-level checks for right-drag lens panning and local aliases. The
+    /// pan must move the projection without touching the orbit target, and
+    /// auto-orbit must keep turning the globe around that same target while a
+    /// pan is held. Aliases must replace the raw hostname/domain by default
+    /// and restore the original address when "show both" is enabled.
+    func debugInteractionChecks() -> [String] {
+        var failed: [String] = []
+
+        // Pan: the globe centre must move in the viewport, and picking must
+        // still line up with the shifted projection.
+        cameraFlight = nil
+        let savedPosition = camera.position
+        let savedPan = camera.pan
+        let viewport = SIMD2<Float>(Float(frameViewSize.width), Float(frameViewSize.height))
+        camera.pan = .zero
+        let before = camera.project(Vec3(0, 0.15, 0), viewport: viewport)
+        beginPan()
+        pan(dx: 120, dy: 60, viewSize: frameViewSize)
+        endPan()
+        let moved = camera.project(Vec3(0, 0.15, 0), viewport: viewport)
+        if abs(moved.x - before.x) < 8 || abs(moved.y - before.y) < 4 {
+            failed.append("pan-input")
+        }
+        if moved.x <= before.x || moved.y >= before.y {
+            failed.append("pan-direction")
+        }
+        let panProbe = debugPickProbe()
+        if !panProbe.destination || !panProbe.device {
+            failed.append("pan-pick-alignment")
+        }
+        beginPan()
+        pan(dx: 5000, dy: 5000, viewSize: frameViewSize)
+        endPan()
+        if abs(camera.pan.x - Self.panLimit) > 0.0001
+            || abs(camera.pan.y - Self.panLimit) > 0.0001 {
+            failed.append("pan-clamp")
+        }
+
+        // Auto-orbit with a panned globe: the camera must move, the lens shift
+        // must stay put, and the globe centre must hold its screen position.
+        let savedSpin = spinEnabled
+        let savedPaused = paused
+        let savedAutoResume = autoResumeAt
+        let heldPan = camera.pan
+        let heldCenter = camera.project(Vec3(0, 0.15, 0), viewport: viewport)
+        let spinBefore = camera.position
+        spinEnabled = true
+        paused = false
+        autoResumeAt = 0
+        sphericalDelta = .zero
+        dragging = false
+        advanceForSnapshot(seconds: 1.0)
+        if camera.position.distance(to: spinBefore) < 0.005 {
+            failed.append("pan-auto-orbit")
+        }
+        if simd_distance(camera.pan, heldPan) > 1e-5 {
+            failed.append("pan-auto-orbit-moved-globe")
+        }
+        let centerAfter = camera.project(Vec3(0, 0.15, 0), viewport: viewport)
+        if heldCenter.distance(to: centerAfter) > 0.5 {
+            failed.append("pan-spin-off-axis")
+        }
+        spinEnabled = savedSpin
+        paused = savedPaused
+        autoResumeAt = savedAutoResume
+        camera.position = savedPosition
+        camera.pan = savedPan
+        camera.target = orbitTarget
+        sphericalDelta = .zero
+        dragging = false
+        panDragging = false
+
+        // Alias display rules.
+        let savedDeviceAliases = deviceAliases
+        let savedDestinationAliases = destinationAliases
+        let savedShowBoth = showAliasWithAddress
+        if let device = network.devices.first(where: { $0.name != $0.ip }) {
+            setShowAliasWithAddress(false)
+            setDeviceAlias("Lab device", for: device)
+            if deviceDisplayName(device) != "Lab device" {
+                failed.append("device-alias-title")
+            }
+            if deviceAddressText(device) != nil {
+                failed.append("device-alias-replaces-ip")
+            }
+            setShowAliasWithAddress(true)
+            if deviceAddressText(device) != device.ip {
+                failed.append("device-alias-show-both")
+            }
+            setDeviceAlias("", for: device)
+            if deviceAlias(device) != nil || deviceAddressText(device) != device.ip {
+                failed.append("device-alias-clear")
+            }
+        } else {
+            failed.append("device-alias-fixture")
+        }
+        if let destination = network.destinations.first {
+            setShowAliasWithAddress(false)
+            setDestinationAlias("Lab DNS", for: destination)
+            if destinationDisplayName(destination) != "Lab DNS" {
+                failed.append("destination-alias-title")
+            }
+            if destinationOriginalText(destination) != nil {
+                failed.append("destination-alias-hides-original")
+            }
+            setShowAliasWithAddress(true)
+            if destinationOriginalText(destination) != destination.domain {
+                failed.append("destination-alias-show-both")
+            }
+            setDestinationAlias("", for: destination)
+            if destinationAlias(destination) != nil {
+                failed.append("destination-alias-clear")
+            }
+        } else {
+            failed.append("destination-alias-fixture")
+        }
+        deviceAliases = savedDeviceAliases
+        destinationAliases = savedDestinationAliases
+        showAliasWithAddress = savedShowBoth
+        AtlasPreferences.deviceAliases = savedDeviceAliases
+        AtlasPreferences.destinationAliases = savedDestinationAliases
+        AtlasPreferences.showAliasWithAddress = savedShowBoth
+        aliasesDidChange()
         return failed
     }
 
@@ -2452,7 +2603,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
             tourPhase = 0
             tourInterval = 0.05
             autoTour = true
-            showToast("Auto tour engaged · \(destination.domain)", tone: .gold)
+            showToast("Auto tour engaged · \(destinationDisplayName(destination))", tone: .gold)
         } else {
             autoTour = false
             tourDestinationId = nil
@@ -2887,7 +3038,10 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     private func destinationLabel(node: NodeView, destination: Destination,
                                   screen: SIMD3<Float>, blur: CGFloat, latency: String) -> AtlasLabel {
-        let cacheKey = "d:\(destination.id):\(latency):\(destination.status.rawValue)"
+        let host = destinationDisplayName(destination)
+        let original = destinationOriginalText(destination)
+        let detail = original.map { "\($0) · \(latency)" } ?? latency
+        let cacheKey = "d:\(destination.id):\(host):\(detail):\(destination.status.rawValue)"
         let size: CGSize
         if let cached = labelSizeCache[cacheKey] {
             size = cached
@@ -2895,13 +3049,13 @@ final class AtlasRuntime: NSObject, ObservableObject {
             let hostFont = NSFont.monospacedSystemFont(ofSize: 8.2, weight: .regular)
             let keyFont = NSFont.monospacedSystemFont(ofSize: 5.6, weight: .regular)
             let subFont = NSFont.monospacedSystemFont(ofSize: 6.2, weight: .regular)
-            let hostWidth = ceil((destination.domain as NSString).size(withAttributes: [.font: hostFont]).width)
+            let hostWidth = ceil((host as NSString).size(withAttributes: [.font: hostFont]).width)
             let keyWidth = max(16, ceil((destination.key as NSString).size(withAttributes: [.font: keyFont]).width) + 6)
             let chipWidth: CGFloat = destination.status == .blocked ? 38 : 0
             let tagWidth = 5 + keyWidth + 6 + hostWidth + (chipWidth > 0 ? 6 + chipWidth : 0) + 7
             let metaWidth = ceil((destination.status.rawValue as NSString).size(withAttributes: [.font: subFont]).width)
-            let latencyWidth = ceil((latency as NSString).size(withAttributes: [.font: subFont]).width)
-            let width = max(tagWidth, metaWidth + 6 + 2 + 6 + latencyWidth)
+            let detailWidth = ceil((detail as NSString).size(withAttributes: [.font: subFont]).width)
+            let width = max(tagWidth, metaWidth + 6 + 2 + 6 + detailWidth)
             size = CGSize(width: max(52, width), height: 40)
             if labelSizeCache.count > 2048 { labelSizeCache.removeAll(keepingCapacity: true) }
             labelSizeCache[cacheKey] = size
@@ -2909,26 +3063,28 @@ final class AtlasRuntime: NSObject, ObservableObject {
         return AtlasLabel(
             id: "dest-\(destination.id)", kind: .destination,
             anchor: CGPoint(x: CGFloat(screen.x), y: CGFloat(screen.y)),
-            key: destination.key, host: destination.domain,
+            key: destination.key, host: host,
             badge: destination.status == .blocked ? "blocked" : nil,
-            meta: destination.status.rawValue, detail: latency,
+            meta: destination.status.rawValue, detail: detail,
             blocked: destination.status == .blocked,
             hovered: node.hovered, selected: node.selected, blur: blur, size: size,
-            accessibilityLabel: "\(destination.domain), \(destination.status.rawValue), \(latency)"
+            accessibilityLabel: "\(host), \(destination.domain), \(destination.status.rawValue), \(detail)"
         )
     }
 
     private func deviceLabel(view: DeviceView, device: Device, screen: SIMD3<Float>) -> AtlasLabel {
         let rate = Format.rate(source.getQps(device.id))
-        let detail = "\(device.ip) · \(rate)/s"
-        let cacheKey = "v:\(device.id):\(detail)"
+        let host = deviceDisplayName(device)
+        let address = deviceAddressText(device)
+        let detail = address.map { "\($0) · \(rate)/s" } ?? "\(rate)/s"
+        let cacheKey = "v:\(device.id):\(host):\(detail)"
         let size: CGSize
         if let cached = labelSizeCache[cacheKey] {
             size = cached
         } else {
             let hostFont = NSFont.monospacedSystemFont(ofSize: 8.2, weight: .regular)
             let subFont = NSFont.monospacedSystemFont(ofSize: 6.2, weight: .regular)
-            let hostWidth = ceil((device.name as NSString).size(withAttributes: [.font: hostFont]).width)
+            let hostWidth = ceil((host as NSString).size(withAttributes: [.font: hostFont]).width)
             let tagWidth = 5 + 12 + 6 + hostWidth + (device.thisMac ? 6 + 35 : 0) + 7
             let metaWidth = ceil(("source" as NSString).size(withAttributes: [.font: subFont]).width)
             let detailWidth = ceil((detail as NSString).size(withAttributes: [.font: subFont]).width)
@@ -2940,12 +3096,104 @@ final class AtlasRuntime: NSObject, ObservableObject {
         return AtlasLabel(
             id: "dev-\(device.id)", kind: .device,
             anchor: CGPoint(x: CGFloat(screen.x), y: CGFloat(screen.y)),
-            key: "", host: device.name,
+            key: "", host: host,
             badge: device.thisMac ? "this mac" : nil,
             meta: "source", detail: detail,
             blocked: false, hovered: view.hovered, selected: view.selected, blur: 0, size: size,
-            accessibilityLabel: "\(device.name), \(device.kind), \(detail)"
+            accessibilityLabel: "\(host), \(device.kind), \(device.name), \(detail)"
         )
+    }
+
+    // ── aliases ──────────────────────────────────────────────────────────
+
+    /// Aliases are keyed by the stable facts Pi-hole gives us, not by the
+    /// synthetic graph ids rebuilt on every refresh: device IP and destination
+    /// domain. A local alias is display data only and never reaches Pi-hole.
+    private func aliasKey(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func normalizedAlias(_ raw: String) -> String? {
+        let trimmed = raw
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return String(trimmed.prefix(64))
+    }
+
+    func deviceAlias(_ device: Device) -> String? {
+        deviceAliases[aliasKey(device.ip)]
+    }
+
+    func destinationAlias(_ destination: Destination) -> String? {
+        destinationAliases[aliasKey(destination.domain)]
+    }
+
+    /// The primary card title. A local alias takes over the title so cards
+    /// present the name the user chose instead of Pi-hole's raw hostname.
+    func deviceDisplayName(_ device: Device) -> String {
+        deviceAlias(device) ?? device.name
+    }
+
+    /// The address line under a device's title. Without an alias the IP is
+    /// shown as before. With an alias the IP disappears by default; enabling
+    /// "show both" brings it back beside the alias.
+    func deviceAddressText(_ device: Device) -> String? {
+        guard deviceAlias(device) != nil else { return device.ip }
+        return showAliasWithAddress ? device.ip : nil
+    }
+
+    func destinationDisplayName(_ destination: Destination) -> String {
+        destinationAlias(destination) ?? destination.domain
+    }
+
+    /// The original domain beside an alias. Nil when the destination has no
+    /// alias (the primary title is already the domain) or when the user asked
+    /// for alias-only cards.
+    func destinationOriginalText(_ destination: Destination) -> String? {
+        guard destinationAlias(destination) != nil else { return nil }
+        return showAliasWithAddress ? destination.domain : nil
+    }
+
+    func setDeviceAlias(_ raw: String, for device: Device) {
+        var next = deviceAliases
+        let key = aliasKey(device.ip)
+        if let value = normalizedAlias(raw) {
+            next[key] = value
+        } else {
+            next.removeValue(forKey: key)
+        }
+        guard next != deviceAliases else { return }
+        deviceAliases = next
+        AtlasPreferences.deviceAliases = next
+        aliasesDidChange()
+    }
+
+    func setDestinationAlias(_ raw: String, for destination: Destination) {
+        var next = destinationAliases
+        let key = aliasKey(destination.domain)
+        if let value = normalizedAlias(raw) {
+            next[key] = value
+        } else {
+            next.removeValue(forKey: key)
+        }
+        guard next != destinationAliases else { return }
+        destinationAliases = next
+        AtlasPreferences.destinationAliases = next
+        aliasesDidChange()
+    }
+
+    func setShowAliasWithAddress(_ enabled: Bool) {
+        guard showAliasWithAddress != enabled else { return }
+        showAliasWithAddress = enabled
+        AtlasPreferences.showAliasWithAddress = enabled
+        aliasesDidChange()
+    }
+
+    private func aliasesDidChange() {
+        labelSizeCache.removeAll(keepingCapacity: true)
+        updateLabels(force: true)
+        if rightRailOpen { refreshFeed() }
     }
 
     // ── picking ──────────────────────────────────────────────────────────
@@ -3054,13 +3302,14 @@ final class AtlasRuntime: NSObject, ObservableObject {
         let direction = (camera.position - orbitTarget).normalized
         camera.position = orbitTarget + direction * fitDistance
         camera.target = orbitTarget
+        camera.pan = clampedPan(camera.pan)
         camera.aspect = Float(frameViewSize.width / max(1, frameViewSize.height))
         lastFramingTarget = targetGlobeRadius()
         updateCameraLimits()
     }
 
     func orbit(dx: CGFloat, dy: CGFloat, viewSize: CGSize) {
-        guard cameraFlight == nil else { return }
+        guard cameraFlight == nil, !panDragging else { return }
         guard !windowMoving || windowDragSpinsGlobe else { return }
         cameraDragging = true
         dragging = true
@@ -3069,6 +3318,42 @@ final class AtlasRuntime: NSObject, ObservableObject {
         sphericalDelta.y -= TAU * Float(dy) / h * 0.52
         autoResumeAt = CACurrentMediaTime() + 6
         lastInteraction = CACurrentMediaTime()
+    }
+
+    // ── pan (right-drag) ──────────────────────────────────────────────────
+
+    /// The globe's lens shift is clamped so it can be moved freely around the
+    /// viewport but never entirely out of view. NDC ±1 is the viewport edge;
+    /// ±0.6 keeps a usable part of the globe on screen on both axes.
+    private static let panLimit: Float = 0.6
+
+    private func clampedPan(_ value: SIMD2<Float>) -> SIMD2<Float> {
+        SIMD2(clamp(value.x, -Self.panLimit, Self.panLimit),
+              clamp(value.y, -Self.panLimit, Self.panLimit))
+    }
+
+    func beginPan() {
+        guard cameraFlight == nil else { return }
+        panDragging = true
+        lastInteraction = CACurrentMediaTime()
+    }
+
+    /// Right-drag translates the globe on screen. It is deliberately a lens
+    /// shift rather than a camera pan: the camera keeps orbiting the same
+    /// look target, so an enabled auto-orbit still spins the globe on its own
+    /// axis instead of swinging it around the moved target.
+    func pan(dx: CGFloat, dy: CGFloat, viewSize: CGSize) {
+        guard cameraFlight == nil, panDragging else { return }
+        let w = max(1, Float(viewSize.width))
+        let h = max(1, Float(viewSize.height))
+        camera.pan.x += Float(dx) * 2 / w
+        camera.pan.y += Float(dy) * 2 / h
+        camera.pan = clampedPan(camera.pan)
+        lastInteraction = CACurrentMediaTime()
+    }
+
+    func endPan() {
+        panDragging = false
     }
 
     func endDrag() {
@@ -3139,6 +3424,8 @@ final class AtlasRuntime: NSObject, ObservableObject {
             camera.position = to
             orbitTarget = target
             camera.target = target
+            camera.pan = .zero
+            panDragging = false
             return
         }
         let fromOffset = from - orbitTarget
@@ -3159,10 +3446,13 @@ final class AtlasRuntime: NSObject, ObservableObject {
             toRadius: max(0.001, toLength),
             fromDir: fromDir,
             toDir: toDir,
-            rotation: Quat(from: fromDir, to: toDir)
+            rotation: Quat(from: fromDir, to: toDir),
+            fromPan: camera.pan,
+            toPan: .zero
         )
         cameraDragging = false
         dragging = false
+        panDragging = false
     }
 
     /// The single action behind a double-click or an explicit "focus" button.
@@ -3309,7 +3599,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
         if let record = lastImpact,
            let node = nodeByDest[record.destinationId] {
             let telemetry = StudyTelemetry(
-                host: node.destinationRef.domain,
+                host: destinationDisplayName(node.destinationRef),
                 inbound: record.normal,
                 axis: record.normal,
                 centre: record.point,
@@ -3333,8 +3623,8 @@ final class AtlasRuntime: NSObject, ObservableObject {
                 id: event.id,
                 deviceId: event.deviceId,
                 destinationId: event.destinationId,
-                deviceName: event.device.name,
-                domain: event.destination.domain,
+                deviceName: deviceDisplayName(event.device),
+                domain: destinationDisplayName(event.destination),
                 clock: Format.clock(event.ts),
                 status: event.status,
                 latency: event.latency,

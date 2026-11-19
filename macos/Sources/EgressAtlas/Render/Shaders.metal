@@ -136,6 +136,7 @@ struct DofUniforms {
     float4 cameraUp;
     float4 cameraForward;
     float4 depthParams;  // tanHalfFov, globeRadius, near, far
+    float4 pan;          // lens-shift x, y, unused, unused
 };
 
 struct BrightUniforms {
@@ -911,6 +912,11 @@ fragment float4 dof_fragment(PostOut in [[stage_in]],
     // scene render.
     float2 ndc = uv * 2.0 - 1.0;
     ndc.y = -ndc.y;
+    // The scene projection is lens-shifted by the right-drag pan. Rebuild the
+    // focus ray through the same shifted frustum, otherwise the analytic globe
+    // intersection keeps following the old centre and the moved globe falls
+    // into the far blur.
+    ndc -= u.pan.xy;
     float3 ray = normalize(u.cameraForward.xyz
                            + u.cameraRight.xyz * (ndc.x * u.depthParams.x * u.params.w)
                            + u.cameraUp.xyz * (ndc.y * u.depthParams.x));

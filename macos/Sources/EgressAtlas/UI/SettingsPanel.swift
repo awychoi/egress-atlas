@@ -392,6 +392,25 @@ struct SettingsPanel: View {
             }
             .padding(.vertical, 7)
 
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Show alias and address")
+                        .font(.atlasSans(10.5, .medium))
+                        .foregroundColor(Palette.text2.color)
+                    Text(runtime.showAliasWithAddress
+                         ? "cards show the alias plus the original IP or domain"
+                         : "cards show only the alias, or the IP/domain when unset")
+                        .font(.atlasSans(8.5, .regular))
+                        .foregroundColor(Palette.dim.color)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                TinyToggle(isOn: Binding(get: { runtime.showAliasWithAddress },
+                                         set: { runtime.setShowAliasWithAddress($0) }),
+                           label: "Show alias and address")
+            }
+            .padding(.vertical, 7)
+
             VStack(alignment: .leading, spacing: 0) {
                 Text("Labels")
                     .font(.atlasSans(10.5, .medium))

@@ -22,7 +22,7 @@ The history window runs from one hour to seven days and follows each body's `las
 
 `AtlasRuntime` owns the network, source, selection, overlays, camera and playback state. The view's display link advances the runtime and calls `MTKView.draw()` directly. `ATLAS_CLOCK=timer|async` selects fallback clocks for measurement. The direct draw avoids an extra AppKit display pass that used to cap presentation near 24 fps.
 
-The renderer uses a linear HDR `rgba16Float` scene with 4× MSAA, double-buffered post targets and a final `bgra8Unorm` pass. Depth of field derives from the globe's front intersection, so it needs no second scene pass. Bloom runs a five-mip chain capped at 960×540 device pixels. ACES tone mapping and sRGB transfer are followed by vignette and grain, and render scale is capped at 1.75×.
+The renderer uses a linear HDR `rgba16Float` scene with 4× MSAA, double-buffered post targets and a final `bgra8Unorm` pass. Depth of field derives from the globe's front intersection, so it needs no second scene pass; the focus ray is reconstructed through the same lens shift as the scene projection, so panning the globe does not push it into the far blur. Bloom runs a five-mip chain capped at 960×540 device pixels. ACES tone mapping and sRGB transfer are followed by vignette and grain, and render scale is capped at 1.75×.
 
 The field includes a dotted shell, dust, a latitude/longitude grid, three armillary rings, horizon ticks, a star-dome shader, atmosphere and glass shells, and a coral/gold limb sprite. Device and destination geometry, wire curves and hit shaders are native Metal.
 
@@ -38,7 +38,9 @@ The Source panel offers 25, 50, 100 and All populations. Top 100 is the default.
 
 Display and motion settings persist in user defaults: labels, history window, auto-orbit, window-drag coupling, response, node recoil, study speed and the hit-plane overlay. Playback, auto tour, pause and the outcome filter last for the session.
 
-The dock has zoom, rotate, reset, top view, Face hit and auto-orbit. Dragging the field orbits the camera; moving the window leaves the camera still unless Display → Window drag spins globe is enabled. The window clamps to 680 × 700 so the top bar and transport timeline stay intact. Keyboard shortcuts cover camera, playback, panels and search.
+The dock has zoom, rotate, reset, top view, Face hit and auto-orbit. Dragging the field orbits the camera; right-dragging moves the globe freely around the viewport with an off-axis (lens-shift) projection. Because the camera keeps orbiting the same look target, an enabled auto-orbit continues to spin the globe around its own axis while it is moved. Moving the window leaves the camera still unless Display → Window drag spins globe is enabled. The window clamps to 680 × 700 so the top bar and transport timeline stay intact. Keyboard shortcuts cover camera, playback, panels and search.
+
+Select a device or destination to edit its local alias in the inspector. Device aliases are keyed by IP and destination aliases by domain, so they survive the synthetic ids rebuilt on every live refresh. Cards use the alias as the primary name and hide the original IP/domain by default; Display → Show alias and address restores it. Aliases are local display data only and are never sent to Pi-hole.
 
 Picking ranks hits by screen distance to each body's projected center, which keeps a far-shell device addressable when a foreground orb's larger hit volume covers the ray. Hovering shows a tag; double-clicking orbits to the body. The Metal view hit-tests SwiftUI chrome, and cursor updates share one authority to prevent flicker. Controls have VoiceOver labels; the globe is a summarized accessibility element, and the rails and inspector rows are fully labeled.
 
@@ -86,7 +88,7 @@ swift build
   --out ../docs/assets/screenshots/egress-atlas.png
 ```
 
-`--self-test` checks the demo model, picking, effects, focus, windows and the Metal renderer; a pass ends with `metal renderer OK`. `--snapshot` writes a deterministic still without screen-capture permission. `--live-test --url http://127.0.0.1:8080 --password testpass` runs the client against a local mock; `testpass` is a fixture.
+`--self-test` checks the demo model, picking, effects, focus, right-drag panning, alias display, windows and the Metal renderer; a pass ends with `metal renderer OK`. `--snapshot` writes a deterministic still without screen-capture permission. `--live-test --url http://127.0.0.1:8080 --password testpass` runs the client against a local mock; `testpass` is a fixture.
 
 For pacing, run with `ATLAS_DIAGNOSTICS=1 ATLAS_LOG=/tmp/atlas.log` and grep for `pacing mode` and `present fps`. `ATLAS_LABELS=all` forces the dense label path.
 
@@ -100,8 +102,8 @@ Three choices keep the frame budget bounded. Local-flow affinity is indexed once
 
 ## Privacy and security
 
-The demo runs offline with local assets. The app has no accounts, telemetry or remote code and talks only to the configured Pi-hole origin. The API password lives in the login Keychain; the URL and certificate preference stay in user defaults. Pi-hole access is read-only.
+The demo runs offline with local assets. The app has no accounts, telemetry or remote code and talks only to the configured Pi-hole origin. The API password lives in the login Keychain; the URL, certificate preference and local aliases stay in user defaults. Pi-hole access is read-only.
 
 ## Limits
 
-Live data comes from a six-hour sample. The 25–100 populations stay compact; All includes every client and domain and can overlap into a bright field. Multi-day history, replay and alias editing are absent; live data lives in memory. The build is ad-hoc signed and not notarized. The globe is a summarized accessibility element, while the rails and inspector rows are fully labeled. Field labels stay compact at small window sizes. Destination relaxation is pair-based, so a live All population is layout-bound around 57 fps on a M1 Max MBP.
+Live data comes from a six-hour sample. The 25–100 populations stay compact; All includes every client and domain and can overlap into a bright field. Multi-day history and replay are absent; live data lives in memory. Aliases are local to this Mac and are never written back to Pi-hole. The build is ad-hoc signed and not notarized. The globe is a summarized accessibility element, while the rails and inspector rows are fully labeled. Field labels stay compact at small window sizes. Destination relaxation is pair-based, so a live All population is layout-bound around 57 fps on a M1 Max MBP.

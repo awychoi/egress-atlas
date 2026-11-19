@@ -749,7 +749,8 @@ final class GlobeRenderer: NSObject, MTKViewDelegate {
             cameraUp: SIMD4(up, 1),
             cameraForward: SIMD4(forward, 1),
             depthParams: SIMD4(tan(cam.fov * .pi / 360),
-                               runtime?.globeRadiusForRender ?? 6.34, cam.near, cam.far)
+                               runtime?.globeRadiusForRender ?? 6.34, cam.near, cam.far),
+            pan: SIMD4(cam.pan.x, cam.pan.y, 0, 0)
         )
     }
 
