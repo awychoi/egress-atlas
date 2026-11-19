@@ -42,7 +42,7 @@ struct HelpPanel: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 8)
 
-                    Text("Select a device or destination to set a local alias in the inspector. Aliases never leave this Mac; Display → Show alias and address puts the original IP or domain back beside them.")
+                    Text("Select a device or destination to set a local alias in the inspector. Aliases never leave this Mac. A device alias replaces the name while its IP stays visible; Display → Show domain with alias puts the original domain back beside a destination alias.")
                         .font(.atlasSans(8.5, .regular))
                         .lineSpacing(1.5)
                         .foregroundColor(Palette.dim.color)

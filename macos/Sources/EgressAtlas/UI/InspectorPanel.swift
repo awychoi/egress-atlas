@@ -98,7 +98,8 @@ struct InspectorPanel: View {
         }
     }
 
-    private func titleBlock(subtitle: String, blocked: Bool, title: String) -> some View {
+    private func titleBlock<Subtitle: View>(blocked: Bool, title: String,
+                                            @ViewBuilder subtitle: () -> Subtitle) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
                 .font(.atlasSans(22, .medium))
@@ -106,6 +107,13 @@ struct InspectorPanel: View {
                 .foregroundColor(blocked ? Palette.coralHot.color : Palette.text.color)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
+            subtitle()
+        }
+        .padding(.top, 12)
+    }
+
+    private func titleBlock(subtitle: String, blocked: Bool, title: String) -> some View {
+        titleBlock(blocked: blocked, title: title) {
             Text(subtitle.uppercased())
                 .font(.atlasMono(7.5, .regular))
                 .tracking(7.5 * 0.03)
@@ -113,7 +121,6 @@ struct InspectorPanel: View {
                 .foregroundColor(Palette.dim.color)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(.top, 12)
     }
 
     private func statsGrid(_ cells: [(String, String, Bool)]) -> some View {
@@ -168,14 +175,22 @@ struct InspectorPanel: View {
         let recent = runtime.recentEvents(deviceId: device.id)
         let displayName = runtime.deviceDisplayName(device)
         let address = runtime.deviceAddressText(device)
-        var subtitleParts = [device.kind]
-        if let address { subtitleParts.append(address) }
-        if device.thisMac { subtitleParts.append("this mac") }
         return VStack(alignment: .leading, spacing: 0) {
-            titleBlock(subtitle: "\(subtitleParts.joined(separator: " · "))\n\(device.os)",
-                       blocked: false, title: displayName)
+            titleBlock(blocked: false, title: displayName) {
+                VStack(alignment: .leading, spacing: 6) {
+                    DeviceKindLine(device: device, address: address, size: 7.5,
+                                   uppercase: true, trackingEm: 0.03,
+                                   suffix: device.thisMac ? "this mac" : nil)
+                    Text(device.os.uppercased())
+                        .font(.atlasMono(7.5, .regular))
+                        .tracking(7.5 * 0.03)
+                        .lineSpacing(3)
+                        .foregroundColor(Palette.dim.color)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             AliasEditor(runtime: runtime, original: device.ip,
-                        alias: runtime.deviceAlias(device)) { value in
+                        alias: runtime.deviceAlias(device), target: .device) { value in
                 runtime.setDeviceAlias(value, for: device)
             }
             .id("alias-device-\(device.id)")
@@ -238,7 +253,7 @@ struct InspectorPanel: View {
                 title: displayName
             )
             AliasEditor(runtime: runtime, original: destination.domain,
-                        alias: runtime.destinationAlias(destination)) { value in
+                        alias: runtime.destinationAlias(destination), target: .destination) { value in
                 runtime.setDestinationAlias(value, for: destination)
             }
             .id("alias-destination-\(destination.id)")
@@ -304,7 +319,7 @@ struct InspectorPanel: View {
             titleBlock(subtitle: "via \(via)\nlast seen \(Format.ago(edge.lastSeen))",
                        blocked: blocked, title: destinationName)
             AliasEditor(runtime: runtime, original: destination.domain,
-                        alias: runtime.destinationAlias(destination)) { value in
+                        alias: runtime.destinationAlias(destination), target: .destination) { value in
                 runtime.setDestinationAlias(value, for: destination)
             }
             .id("alias-path-\(destination.id)")

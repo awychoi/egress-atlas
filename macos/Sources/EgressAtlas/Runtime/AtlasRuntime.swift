@@ -2184,7 +2184,8 @@ final class AtlasRuntime: NSObject, ObservableObject {
         dragging = false
         panDragging = false
 
-        // Alias display rules.
+        // Alias display rules. A device alias replaces the title but never the
+        // IP; a destination alias still follows the "show both" preference.
         let savedDeviceAliases = deviceAliases
         let savedDestinationAliases = destinationAliases
         let savedShowBoth = showAliasWithAddress
@@ -2194,12 +2195,12 @@ final class AtlasRuntime: NSObject, ObservableObject {
             if deviceDisplayName(device) != "Lab device" {
                 failed.append("device-alias-title")
             }
-            if deviceAddressText(device) != nil {
-                failed.append("device-alias-replaces-ip")
+            if deviceAddressText(device) != device.ip {
+                failed.append("device-alias-keeps-ip")
             }
             setShowAliasWithAddress(true)
             if deviceAddressText(device) != device.ip {
-                failed.append("device-alias-show-both")
+                failed.append("device-alias-keeps-ip-show-both")
             }
             setDeviceAlias("", for: device)
             if deviceAlias(device) != nil || deviceAddressText(device) != device.ip {
@@ -3076,7 +3077,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
         let rate = Format.rate(source.getQps(device.id))
         let host = deviceDisplayName(device)
         let address = deviceAddressText(device)
-        let detail = address.map { "\($0) · \(rate)/s" } ?? "\(rate)/s"
+        let detail = "\(address) · \(rate)/s"
         let cacheKey = "v:\(device.id):\(host):\(detail)"
         let size: CGSize
         if let cached = labelSizeCache[cacheKey] {
@@ -3135,12 +3136,12 @@ final class AtlasRuntime: NSObject, ObservableObject {
         deviceAlias(device) ?? device.name
     }
 
-    /// The address line under a device's title. Without an alias the IP is
-    /// shown as before. With an alias the IP disappears by default; enabling
-    /// "show both" brings it back beside the alias.
-    func deviceAddressText(_ device: Device) -> String? {
-        guard deviceAlias(device) != nil else { return device.ip }
-        return showAliasWithAddress ? device.ip : nil
+    /// The address line under a device's title. An alias only replaces the
+    /// name; the IP is the device's identity and stays visible everywhere so a
+    /// renamed client can still be recognized. This is independent of the
+    /// destination-only "show both" preference.
+    func deviceAddressText(_ device: Device) -> String {
+        device.ip
     }
 
     func destinationDisplayName(_ destination: Destination) -> String {

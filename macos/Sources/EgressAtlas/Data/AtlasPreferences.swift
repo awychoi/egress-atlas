@@ -94,8 +94,9 @@ enum AtlasPreferences {
         set { setAliases(newValue, forKey: destinationAliasesKey) }
     }
 
-    /// When true, cards append the original IP/domain to an alias. The default
-    /// is alias-only, matching the compact index.
+    /// When true, destination cards append the original domain to an alias.
+    /// Device IPs are always visible, so this preference only applies to
+    /// destinations.
     static var showAliasWithAddress: Bool? {
         get { optionalBool(showAliasWithAddressKey) }
         set { setOptionalBool(newValue, forKey: showAliasWithAddressKey) }

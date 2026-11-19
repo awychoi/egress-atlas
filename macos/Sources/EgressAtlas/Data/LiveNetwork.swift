@@ -110,7 +110,7 @@ enum LiveNetworkBuilder {
             let spec = DeviceSpec(
                 id: "live-device-\(index)",
                 name: name,
-                kind: "Pi-hole client",
+                kind: Device.piHoleClientKind,
                 ip: client.ip,
                 os: "live DNS client",
                 lat: 0,

@@ -227,10 +227,7 @@ struct DeviceIndexRow: View {
     private var qps: Float { runtime.source.getQps(device.id) }
     private var lastSeenText: String { Format.ago(device.lastSeen) }
     private var displayName: String { runtime.deviceDisplayName(device) }
-    private var addressText: String? { runtime.deviceAddressText(device) }
-    private var subtitle: String {
-        [device.kind, addressText].compactMap { $0 }.joined(separator: " · ")
-    }
+    private var addressText: String { runtime.deviceAddressText(device) }
     private var maxQps: Float {
         max(1.2, runtime.network.devices.map { runtime.source.getQps($0.id) }.max() ?? 1)
     }
@@ -256,10 +253,7 @@ struct DeviceIndexRow: View {
                             .overlay(RoundedRectangle(cornerRadius: 2).strokeBorder(Palette.signal.opacity(0.32), lineWidth: 1))
                     }
                 }
-                Text(subtitle)
-                    .font(.atlasMono(7, .regular))
-                    .foregroundColor(Palette.dim.color)
-                    .lineLimit(1)
+                DeviceKindLine(device: device, address: addressText, size: 7)
             }
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 3) {
@@ -304,7 +298,7 @@ struct DeviceIndexRow: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
-        .accessibilityLabel("\(displayName), \(device.kind), \(addressText ?? device.ip), last seen \(lastSeenText)\(device.liveBlocked > 0 ? ", \(Format.count(device.liveBlocked)) blocked" : "")")
+        .accessibilityLabel("\(displayName), \(device.kind), \(addressText), last seen \(lastSeenText)\(device.liveBlocked > 0 ? ", \(Format.count(device.liveBlocked)) blocked" : "")")
         .help("\(device.name) · \(device.ip)")
     }
 }

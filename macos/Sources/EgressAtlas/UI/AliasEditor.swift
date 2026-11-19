@@ -1,14 +1,23 @@
 import SwiftUI
 
 /// Small inline editor used by the inspector cards. Aliases are local display
-/// names only: they never travel to Pi-hole and the original address stays one
-/// keystroke away.
+/// names only: they never travel to Pi-hole. A device alias replaces the name
+/// while the IP stays visible; a destination alias can optionally keep the
+/// original domain beside it.
 struct AliasEditor: View {
+    enum Target {
+        case device
+        case destination
+    }
+
     @ObservedObject var runtime: AtlasRuntime
     /// The IP or domain this alias stands in for.
     let original: String
     /// The currently stored alias, if any.
     let alias: String?
+    /// Devices always keep their address; destinations follow the display
+    /// preference for showing the original domain beside the alias.
+    let target: Target
     /// Persists an empty string as "remove the alias".
     let commit: (String) -> Void
 
@@ -30,9 +39,14 @@ struct AliasEditor: View {
 
     private var helperText: String {
         guard hasAlias else { return "cards show \(original)" }
-        return runtime.showAliasWithAddress
-            ? "alias + \(original)"
-            : "alias replaces \(original)"
+        switch target {
+        case .device:
+            return "alias replaces the title · IP stays visible"
+        case .destination:
+            return runtime.showAliasWithAddress
+                ? "alias + \(original)"
+                : "alias replaces \(original)"
+        }
     }
 
     var body: some View {
@@ -107,14 +121,16 @@ struct AliasEditor: View {
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
-                Text("SHOW BOTH")
-                    .font(.atlasMono(5.9, .regular))
-                    .tracking(5.9 * 0.06)
-                    .foregroundColor(runtime.showAliasWithAddress ? Palette.gold.color : Palette.dim.color)
-                TinyToggle(isOn: Binding(get: { runtime.showAliasWithAddress },
-                                         set: { runtime.setShowAliasWithAddress($0) }),
-                           label: "Show alias and address")
-                    .help("Show aliases and original addresses on every card")
+                if target == .destination {
+                    Text("SHOW BOTH")
+                        .font(.atlasMono(5.9, .regular))
+                        .tracking(5.9 * 0.06)
+                        .foregroundColor(runtime.showAliasWithAddress ? Palette.gold.color : Palette.dim.color)
+                    TinyToggle(isOn: Binding(get: { runtime.showAliasWithAddress },
+                                             set: { runtime.setShowAliasWithAddress($0) }),
+                               label: "Show domain with alias")
+                        .help("Show the original domain beside destination aliases")
+                }
             }
         }
         .padding(.horizontal, 9)

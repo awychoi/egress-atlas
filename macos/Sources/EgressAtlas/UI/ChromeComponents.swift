@@ -334,6 +334,82 @@ struct AtlasDeviceMark: View {
     }
 }
 
+/// Compact network-node mark used for live Pi-hole clients. The live source
+/// gives every client the same generic kind, so the index shows a glyph and
+/// gives the saved horizontal room to the full IP address.
+struct ClientKindGlyph: View {
+    var size: CGFloat = 10
+    var color: Color = Palette.dim.color
+    var body: some View {
+        Canvas { ctx, s in
+            let k = min(s.width, s.height) / 12
+            let center = CGPoint(x: 6 * k, y: 6.6 * k)
+            let nodes = [
+                CGPoint(x: 6 * k, y: 1.9 * k),
+                CGPoint(x: 1.9 * k, y: 10.1 * k),
+                CGPoint(x: 10.1 * k, y: 10.1 * k),
+            ]
+            var spokes = Path()
+            for node in nodes {
+                spokes.move(to: center)
+                spokes.addLine(to: node)
+            }
+            ctx.stroke(spokes, with: .color(color.opacity(0.45)), lineWidth: 0.9 * k)
+            for node in nodes {
+                ctx.fill(Path(ellipseIn: CGRect(x: node.x - 1.15 * k, y: node.y - 1.15 * k,
+                                                width: 2.3 * k, height: 2.3 * k)),
+                         with: .color(color.opacity(0.82)))
+            }
+            ctx.fill(Path(ellipseIn: CGRect(x: center.x - 1.65 * k, y: center.y - 1.65 * k,
+                                            width: 3.3 * k, height: 3.3 * k)),
+                     with: .color(color))
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+/// The "kind · address" descriptor shared by the device index and the
+/// inspector. Pi-hole's live clients trade the generic words for the glyph;
+/// other sources keep their descriptive kind. The address is always the IP and
+/// does not disappear when a local alias replaces the name.
+struct DeviceKindLine: View {
+    let device: Device
+    let address: String
+    var size: CGFloat = 7
+    var uppercase = false
+    var trackingEm: CGFloat = 0
+    var color: Color = Palette.dim.color
+    var suffix: String?
+
+    private func styled(_ raw: String) -> String {
+        uppercase ? raw.uppercased() : raw
+    }
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if device.isPiHoleClient {
+                ClientKindGlyph(size: max(8, size + 2.5), color: color)
+                    .help(Device.piHoleClientKind)
+            } else {
+                Text(styled(device.kind))
+                Text("·")
+            }
+            Text(styled(address))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if let suffix {
+                Text("·")
+                Text(styled(suffix))
+            }
+        }
+        .font(.atlasMono(size, .regular))
+        .tracking(size * trackingEm)
+        .foregroundColor(color)
+        .lineLimit(1)
+    }
+}
+
 struct AtlasDestinationMark: View {
     var color: Color
     var size: CGFloat = 22

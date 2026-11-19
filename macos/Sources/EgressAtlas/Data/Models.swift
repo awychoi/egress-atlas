@@ -49,6 +49,11 @@ enum LivePopulation: CaseIterable, Identifiable {
 }
 
 final class Device: Identifiable {
+    /// The live source gives every client the same generic kind. The network
+    /// index draws a compact glyph for it instead of repeating the words on
+    /// every row, leaving room for the full IP address.
+    static let piHoleClientKind = "Pi-hole client"
+
     let id: String
     let name: String
     let kind: String
@@ -73,6 +78,8 @@ final class Device: Identifiable {
     var pendingAppearance = false
     var destinations: [Destination] = []
     var edges: [Edge] = []
+
+    var isPiHoleClient: Bool { kind == Self.piHoleClientKind }
 
     init(_ spec: DeviceSpec, surface: Vec3, normal: Vec3) {
         id = spec.id
