@@ -8,7 +8,7 @@ logo: docs/assets/workbench-logo.svg
 logo_light: docs/assets/workbench-logo-light.svg
 meta:
   - label: How it started
-    value: I spotted some questionable DNS pings in my Pi-hole logs and started digging. That sparked an idea for a fun DNS explorer, inspired by games like Lumines and Tetris Effect.
+    value: I was reviewing my pihole log and sparked an idea for a fun DNS explorer, inspired by games like Lumines and Tetris Effect.
 link:
   href: https://github.com/awychoi/egress-atlas
 ---
