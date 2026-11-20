@@ -47,7 +47,7 @@ struct AtlasTopBar: View {
             panelButton(
                 title: "Queries",
                 symbol: "waveform.path.ecg",
-                count: runtime.feedCount,
+                count: runtime.isReplay ? runtime.feed.count : runtime.feedCount,
                 active: runtime.rightRailOpen,
                 hint: "Toggle the live queries panel (])",
                 action: toggleQueries
@@ -164,16 +164,19 @@ struct AtlasTopBar: View {
     }
 
     private var livePill: some View {
-        HStack(spacing: 8) {
+        let replay = runtime.isReplay
+        let tone: Color = runtime.paused ? Palette.coral.color
+            : (replay ? Palette.gold.color : Palette.sage.color)
+        return HStack(spacing: 8) {
             Circle()
-                .fill(runtime.paused ? Palette.coral.color : Palette.sage.color)
+                .fill(tone)
                 .frame(width: 4, height: 4)
-                .shadow(color: (runtime.paused ? Palette.coral : Palette.sage).opacity(0.8), radius: 3.5)
+                .shadow(color: tone.opacity(0.8), radius: 3.5)
                 .opacity(runtime.paused ? 1 : (livePulse ? 1 : 0.32))
-            Text(runtime.paused ? "PAUSED" : "LIVE")
+            Text(runtime.paused ? "PAUSED" : (replay ? "REPLAY" : "LIVE"))
                 .font(.atlasMono(7.5, .regular))
                 .tracking(7.5 * 0.13)
-                .foregroundColor(runtime.paused ? Palette.coral.color : Palette.sage.color)
+                .foregroundColor(tone)
             Text(runtime.clock)
                 .font(.atlasMono(7.5, .regular))
                 .tracking(7.5 * 0.06)
@@ -183,10 +186,11 @@ struct AtlasTopBar: View {
         .padding(.horizontal, 11)
         .padding(.vertical, 5)
         .background(
-            Capsule().fill(runtime.paused ? Color.rgba("25100c", 0.3) : Color.rgba("0e1913", 0.24))
+            Capsule().fill(runtime.paused ? Color.rgba("25100c", 0.3)
+                           : (replay ? Color.rgba("1c1408", 0.35) : Color.rgba("0e1913", 0.24)))
         )
         .overlay(
-            Capsule().strokeBorder(runtime.paused ? Palette.coral.opacity(0.28) : Palette.sage.opacity(0.22), lineWidth: 1)
+            Capsule().strokeBorder(tone.opacity(0.24), lineWidth: 1)
         )
         .onAppear {
             withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { livePulse = true }

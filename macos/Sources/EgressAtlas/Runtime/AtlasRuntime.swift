@@ -18,6 +18,56 @@ enum MotionMode: String, CaseIterable {
     case cinematic, calm, off
 }
 
+enum AtlasMode {
+    case live
+    case replay
+}
+
+/// Preset windows for time travel. The values mirror the history-window stops
+/// the app already exposes, but the replay picker only needs four useful
+/// landing points.
+enum ReplayRange: CaseIterable, Identifiable {
+    case hour
+    case sixHours
+    case day
+    case week
+
+    static let defaultChoice: ReplayRange = .sixHours
+
+    var id: Float { hours }
+
+    var hours: Float {
+        switch self {
+        case .hour: return 1
+        case .sixHours: return 6
+        case .day: return 24
+        case .week: return 168
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .hour: return "1H"
+        case .sixHours: return "6H"
+        case .day: return "24H"
+        case .week: return "7D"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .hour: return "the last hour"
+        case .sixHours: return "the last six hours"
+        case .day: return "the last day"
+        case .week: return "the last seven days"
+        }
+    }
+
+    static func nearest(hours: Float) -> ReplayRange {
+        allCases.min { abs($0.hours - hours) < abs($1.hours - hours) } ?? .sixHours
+    }
+}
+
 enum Selection: Equatable {
     case device(String)
     case destination(String)
@@ -204,6 +254,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
     private var deviceById: [String: DeviceView] = [:]
     private var wireByKey: [String: WireView] = [:]
     private var wireByEdge: [String: WireView] = [:]
+    private var edgeByKey: [String: Edge] = [:]
     private let effects = EffectHost()
     private var signals: [Signal] = []
     private var deviceAppearanceLinks: [DeviceAppearanceLink] = []
@@ -271,6 +322,14 @@ final class AtlasRuntime: NSObject, ObservableObject {
     private var activeSourcePassword: String?
     private var pulseTimer: Timer?
     private var lastPulseSecond = Int(Date().timeIntervalSince1970)
+    private var replayArchive: ReplayArchive?
+    private var replayCursor: Double = 0
+    private var replayIndex = 0
+    private var replayEmitBudget: Double = 0
+    private var replayRecent: [QueryEvent] = []
+    private var replayRequestToken = 0
+    private var replayLastPublished: Double = -1
+    private var replayRateAuto = true
     private var toasts: [ToastMessage] = []
     private var toastToken = 0
 
@@ -309,6 +368,23 @@ final class AtlasRuntime: NSObject, ObservableObject {
     @Published var studyTelemetry: StudyTelemetry?
     @Published var paused = false
     @Published var speed: Float = 1
+    @Published private(set) var mode: AtlasMode = .live
+    @Published private(set) var replayRangeHours: Float = ReplayRange.defaultChoice.hours
+    @Published private(set) var replayStart: Double = 0
+    @Published private(set) var replayEnd: Double = 0
+    @Published private(set) var replayTime: Double = 0
+    @Published private(set) var replayRate: Float = 600
+    @Published private(set) var replayBuckets: [PulseBucket] = []
+    @Published private(set) var replayMaxBucket = 1
+    @Published private(set) var replayTotal = 0
+    @Published private(set) var replayScanned = 0
+    @Published private(set) var replaySkipped = 0
+    @Published private(set) var replaySampled = false
+    @Published private(set) var replaySourceLabel = ""
+    @Published private(set) var replayLoading = false
+    @Published private(set) var replayFinished = false
+    @Published var replayJumpOpen = false
+    @Published var replayLoop = false
     @Published var windowHours: Float
     @Published var selection: Selection?
     @Published private(set) var canGoBack = false
@@ -432,7 +508,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     private func attachSourceListeners() {
         source.queryListeners.append { [weak self] event in
-            guard let self else { return }
+            guard let self, self.mode == .live else { return }
             self.handleQuery(event)
             if self.rightRailOpen { self.refreshFeed() }
             self.bumpPulse(event)
@@ -455,6 +531,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
         deviceById.removeAll()
         wireByKey.removeAll()
         wireByEdge.removeAll()
+        edgeByKey.removeAll()
         effects.clear()
         timers.removeAll()
         signals.removeAll()
@@ -478,6 +555,27 @@ final class AtlasRuntime: NSObject, ObservableObject {
         currentPulse = PulseBucket()
         pulseReady = true
         publishPulse()
+        replayRequestToken += 1
+        replayArchive = nil
+        replayCursor = 0
+        replayIndex = 0
+        replayEmitBudget = 0
+        replayRecent.removeAll()
+        replayFinished = false
+        replayLoading = false
+        replayJumpOpen = false
+        mode = .live
+        replayBuckets = []
+        replayTotal = 0
+        replayScanned = 0
+        replaySkipped = 0
+        replaySampled = false
+        replaySourceLabel = ""
+        replayStart = 0
+        replayEnd = 0
+        replayTime = 0
+        replayLastPublished = -1
+        replayRateAuto = true
         hitCounts = (impact: 0, birth: 0, death: 0)
         previewIndex = (impact: 0, birth: 0, death: 0)
         lastImpact = nil
@@ -688,6 +786,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
             wires.append(wire)
             wireByKey["\(edge.deviceId)::\(edge.destinationId)"] = wire
             wireByEdge[edge.id] = wire
+            edgeByKey[edge.id] = edge
         }
         rebuildLocalWeights()
         for view in devices {
@@ -774,8 +873,289 @@ final class AtlasRuntime: NSObject, ObservableObject {
         let second = Int(Date().timeIntervalSince1970)
         if second != lastPulseSecond {
             lastPulseSecond = second
-            if !paused { commitPulseSecond() }
+            if !paused && !isReplay { commitPulseSecond() }
         }
+    }
+
+    // ── replay ───────────────────────────────────────────────────────────
+
+    var isReplay: Bool { mode == .replay }
+
+    /// Pick a default compression so the whole range plays in roughly three
+    /// minutes. 1× stays available, but a multi-day range would otherwise take
+    /// days to watch before the first useful movement.
+    private static func autoReplayRate(durationMS: Double) -> Float {
+        let seconds = max(1, durationMS / 1000)
+        let target: Double = 180
+        let stops: [Float] = [1, 60, 600, 3_600]
+        return stops.min {
+            abs(log(seconds / Double($0) / target)) < abs(log(seconds / Double($1) / target))
+        } ?? 600
+    }
+
+    var replayProgress: Double {
+        guard isReplay, replayEnd > replayStart else { return 0 }
+        return min(1, max(0, (replayTime - replayStart) / (replayEnd - replayStart)))
+    }
+
+    var replayRangeTitle: String {
+        ReplayRange.nearest(hours: replayRangeHours).title
+    }
+
+    var replayDateText: String {
+        guard replayTime > 0 else { return "--" }
+        return Format.dayTime(replayTime)
+    }
+
+    var replayTimeText: String {
+        guard replayTime > 0 else { return "--:--:--" }
+        return Format.clock(replayTime)
+    }
+
+    /// Load the last `hours` of traffic and start playing at `at` (or at the
+    /// beginning). The demo archive is built locally; a Pi-hole archive is
+    /// fetched from FTL's on-disk query database off the main thread.
+    func enterReplay(hours: Float = ReplayRange.defaultChoice.hours, at anchorMS: Double? = nil) {
+        guard ready else { return }
+        let range = ReplayRange.nearest(hours: hours)
+        let previousFraction: Double = {
+            guard isReplay, replayEnd > replayStart else { return 0 }
+            return min(1, max(0, (replayCursor - replayStart) / (replayEnd - replayStart)))
+        }()
+        let end = Date().timeIntervalSince1970 * 1000
+        let start = max(0, end - Double(range.hours) * 3_600_000)
+        let anchor = anchorMS.map { min(end - 1, max(start, $0)) }
+            ?? (isReplay ? start + (end - start) * previousFraction : start)
+
+        replayRangeHours = range.hours
+        replayRequestToken += 1
+        let token = replayRequestToken
+        replayJumpOpen = false
+
+        if let live = source as? PiHoleSource {
+            replayLoading = true
+            Task { [weak self] in
+                do {
+                    let archive = try await live.loadReplay(from: start, until: end)
+                    await MainActor.run {
+                        self?.installReplay(archive, at: anchor, token: token, range: range)
+                    }
+                } catch {
+                    await MainActor.run {
+                        self?.failReplay(error, token: token, range: range)
+                    }
+                }
+            }
+        } else if let demo = source as? LiveSource {
+            let archive = demo.makeReplay(from: start, until: end)
+            installReplay(archive, at: anchor, token: token, range: range)
+        } else {
+            showToast("This source cannot be replayed.", tone: .coral)
+        }
+    }
+
+    private func installReplay(_ archive: ReplayArchive, at anchor: Double,
+                               token: Int, range: ReplayRange) {
+        guard token == replayRequestToken else { return }
+        guard !archive.events.isEmpty else {
+            replayLoading = false
+            showToast("No playable queries in \(range.detail).", tone: .coral)
+            return
+        }
+        if replayRateAuto {
+            replayRate = Self.autoReplayRate(durationMS: archive.duration)
+        }
+        replayArchive = archive
+        replayStart = archive.start
+        replayEnd = archive.end
+        replayBuckets = archive.buckets
+        replayMaxBucket = archive.maxBucket
+        replayTotal = archive.events.count
+        replayScanned = archive.scannedRows
+        replaySkipped = archive.skippedRows
+        replaySampled = archive.sampled
+        replaySourceLabel = archive.sourceLabel
+        replayLoading = false
+        mode = .replay
+        paused = false
+        source.setPaused(true)
+        replayFinished = false
+        replayLastPublished = -1
+        replayRecent.removeAll()
+        clearReplayEffects()
+        seekReplay(to: anchor, preRoll: true)
+        let sampled = archive.sampled ? " · sampled" : ""
+        showToast("Replay · \(range.title) · \(Format.count(archive.events.count)) queries\(sampled)",
+                  tone: .signal)
+        refreshUI()
+    }
+
+    private func failReplay(_ error: Error, token: Int, range: ReplayRange) {
+        guard token == replayRequestToken else { return }
+        replayLoading = false
+        if replayArchive != nil, replayEnd > replayStart {
+            replayRangeHours = Float((replayEnd - replayStart) / 3_600_000)
+        }
+        showToast("History unavailable · \(error.localizedDescription)", tone: .coral)
+    }
+
+    /// Leave playback and resume the live poller. Safe to call while a history
+    /// request is still in flight; the token discards the late result.
+    func goLive() {
+        guard isReplay || replayLoading else { return }
+        replayRequestToken += 1
+        replayLoading = false
+        replayArchive = nil
+        replayBuckets = []
+        replayTotal = 0
+        replayScanned = 0
+        replaySkipped = 0
+        replaySampled = false
+        replaySourceLabel = ""
+        replayRecent.removeAll()
+        replayFinished = false
+        replayJumpOpen = false
+        replayStart = 0
+        replayEnd = 0
+        replayTime = 0
+        replayLastPublished = -1
+        replayRateAuto = true
+        mode = .live
+        paused = false
+        source.setPaused(false)
+        clearReplayEffects()
+        _ = applyWindow(animate: false, initial: false)
+        lastSourceTime = CACurrentMediaTime()
+        refreshUI()
+        showToast("Live traffic", tone: .signal)
+    }
+
+    func setReplayRate(_ rate: Float) {
+        replayRateAuto = false
+        replayRate = clamp(rate, 1, 7_200)
+        if replayFinished {
+            seekReplay(to: replayStart, preRoll: false)
+        }
+        if paused { setPaused(false) }
+        refreshUI()
+    }
+
+    func setReplayRange(_ range: ReplayRange) {
+        replayRangeHours = range.hours
+        if isReplay || replayLoading {
+            enterReplay(hours: range.hours)
+        }
+    }
+
+    /// Jump the playhead. Clearing the stage makes a scrub read as a jump cut
+    /// rather than a pile-up of studies from the old position. A short
+    /// pre-roll seeds the new position with the queries that just landed.
+    func seekReplay(to timeMS: Double, preRoll: Bool = true) {
+        guard let archive = replayArchive, !archive.events.isEmpty else { return }
+        let target = min(replayEnd, max(replayStart, timeMS))
+        clearReplayEffects()
+        replayCursor = target
+        replayTime = target
+        replayLastPublished = target
+        replayIndex = archive.index(at: target)
+        replayEmitBudget = 0
+        replayRecent.removeAll()
+        replayFinished = target >= replayEnd - 1
+        if preRoll && !paused {
+            let from = archive.index(at: max(replayStart, target - 1_500))
+            var index = from
+            var count = 0
+            while index < replayIndex, count < 8 {
+                playReplayEvent(archive.events[index])
+                index += 1
+                count += 1
+            }
+        }
+        refreshUI()
+    }
+
+    func seekReplay(fraction: Double, preRoll: Bool = false) {
+        guard isReplay else { return }
+        let value = min(1, max(0, fraction))
+        seekReplay(to: replayStart + (replayEnd - replayStart) * value, preRoll: preRoll)
+    }
+
+    private func advanceReplay(dt: Float) {
+        guard isReplay, !paused, !replayLoading,
+              let archive = replayArchive, !archive.events.isEmpty else { return }
+        guard replayCursor < replayEnd else {
+            if replayLoop {
+                seekReplay(to: replayStart, preRoll: false)
+            } else if !replayFinished {
+                replayFinished = true
+            }
+            return
+        }
+        if replayFinished { replayFinished = false }
+        replayEmitBudget = min(1.5, replayEmitBudget + Double(dt) * 30)
+        let target = min(replayEnd, replayCursor + Double(dt) * Double(replayRate) * 1000)
+        var allowed = min(8, Int(replayEmitBudget))
+        while replayIndex < archive.events.count,
+              archive.events[replayIndex].ts <= target,
+              allowed > 0 {
+            playReplayEvent(archive.events[replayIndex])
+            replayIndex += 1
+            allowed -= 1
+            replayEmitBudget -= 1
+        }
+        // The renderer has a fixed signal/effect budget. When history is denser
+        // than that, keep the playhead honest and drop the surplus events for
+        // this slice instead of building an unbounded backlog.
+        while replayIndex < archive.events.count,
+              archive.events[replayIndex].ts <= target {
+            replayIndex += 1
+        }
+        replayCursor = target
+        if replayCursor >= replayEnd {
+            if replayLoop {
+                seekReplay(to: replayStart, preRoll: false)
+            } else {
+                replayFinished = true
+                refreshUI()
+            }
+        }
+    }
+
+    private func playReplayEvent(_ event: ReplayEvent) {
+        guard let device = network.deviceById[event.deviceId],
+              let destination = network.destinationById[event.destinationId],
+              let edge = edgeByKey["\(event.deviceId)::\(event.destinationId)"] else { return }
+        let query = QueryEvent(
+            id: event.id,
+            ts: event.ts,
+            device: device,
+            destination: destination,
+            edge: edge,
+            latency: event.latency
+        )
+        handleQuery(query)
+        replayRecent.insert(query, at: 0)
+        if replayRecent.count > 40 { replayRecent.removeLast(replayRecent.count - 40) }
+    }
+
+    private func clearReplayEffects() {
+        effects.clear()
+        signals.removeAll()
+        deviceAppearanceLinks.removeAll()
+        signalCounts.removeAll()
+        localTraces.removeAll()
+        ringTraces.removeAll()
+        eventLabels.removeAll()
+        lastImpact = nil
+        hitGeometryReplayAt = nil
+        for wire in wires {
+            wire.setSignalActive(false)
+            wire.reveal = 1
+        }
+        for node in nodes { node.stopRecoil() }
+        for device in network.devices { device.pendingAppearance = false }
+        updateLabels(force: true)
+        applyVisualState()
     }
 
     // ── timers ───────────────────────────────────────────────────────────
@@ -827,6 +1207,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
         updateDevices(dt)
         updateNodes(dt)
         updateWires(dt)
+        advanceReplay(dt: dt)
         updateHalo(dt)
         updateLocalTraces(dt)
         for i in signals.indices.reversed() {
@@ -1695,6 +2076,11 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     @discardableResult
     private func applyWindow(animate: Bool, initial: Bool) -> Bool {
+        // Replay owns presence while it runs: a body that was outside the live
+        // history window is born by its first replayed query and should stay
+        // on stage for the rest of the range. Returning to live re-applies the
+        // live window immediately.
+        if isReplay { return false }
         let now = Date().timeIntervalSince1970 * 1000
         let windowMS = Double(windowHours) * 3_600_000
         var changed = false
@@ -2030,8 +2416,19 @@ final class AtlasRuntime: NSObject, ObservableObject {
             let inbound = Vec3(1, 0, 0)
             node.onHit(inbound, recoil: true)
             node.update(dt: 0.02, elapsed: elapsed)
-            if node.recoilOffset.dot(inbound) >= -0.0001 {
-                failed.append("recoil-not-reversed")
+            if node.recoilOffset.dot(inbound) <= 0.0001 {
+                failed.append("recoil-not-forward")
+            }
+            // The visible assembly must take one impulse and settle. A
+            // damped sine used to swing back through the anchor, which read
+            // as a bounce rather than a blast.
+            var minReturn: Float = .greatestFiniteMagnitude
+            for _ in 0..<45 {
+                node.update(dt: 1.0 / 60.0, elapsed: elapsed)
+                minReturn = min(minReturn, node.recoilOffset.dot(inbound))
+            }
+            if minReturn < -0.0001 {
+                failed.append("recoil-bounces")
             }
             node.stopRecoil()
         }
@@ -2457,6 +2854,64 @@ final class AtlasRuntime: NSObject, ObservableObject {
         return failed
     }
 
+    /// Snapshot / verification helper: enter replay, jump to a fraction of the
+    /// range, and settle a few frames so the transport and field show motion.
+    @discardableResult
+    func debugReplay(hours: Float = 6, progress: Double = 0.55,
+                     settle: Float = 0.35) -> (events: Int, buckets: Int) {
+        enterReplay(hours: hours)
+        if isReplay {
+            seekReplay(fraction: progress, preRoll: true)
+            if settle > 0 { advanceForSnapshot(seconds: settle) }
+        }
+        return (replayTotal, replayBuckets.count)
+    }
+
+    /// Check the time-travel contract end to end on the demo source: archive
+    /// creation, seek, advancing, pause, loop and the return to live.
+    func debugReplayChecks() -> [String] {
+        var failed: [String] = []
+        let savedPaused = paused
+        paused = false
+        enterReplay(hours: 1)
+        if !isReplay { failed.append("replay-enter") }
+        if replayTotal == 0 { failed.append("replay-empty") }
+        if replayBuckets.isEmpty { failed.append("replay-buckets") }
+        if replayBuckets.reduce(0, { $0 + $1.total }) == 0 { failed.append("replay-density") }
+        if replayEnd <= replayStart { failed.append("replay-range") }
+        if replaySourceLabel.isEmpty { failed.append("replay-label") }
+        if replayRate != 60 { failed.append("replay-auto-rate") }
+
+        seekReplay(fraction: 0.5, preRoll: true)
+        if replayTime <= replayStart || replayTime >= replayEnd {
+            failed.append("replay-seek")
+        }
+        let before = replayCursor
+        setReplayRate(600)
+        advanceForSnapshot(seconds: 0.3)
+        if replayCursor <= before { failed.append("replay-advance") }
+
+        setPaused(true)
+        let pausedAt = replayCursor
+        advanceForSnapshot(seconds: 0.3)
+        if abs(replayCursor - pausedAt) > 0.01 { failed.append("replay-pause") }
+        setPaused(false)
+
+        seekReplay(fraction: 0.995, preRoll: false)
+        advanceForSnapshot(seconds: 0.5)
+        if !replayFinished { failed.append("replay-finish") }
+
+        replayLoop = true
+        advanceForSnapshot(seconds: 0.3)
+        if replayFinished { failed.append("replay-loop") }
+        replayLoop = false
+
+        goLive()
+        if isReplay { failed.append("replay-live") }
+        paused = savedPaused
+        return failed
+    }
+
     func debugPreviewEffect(kind: String, style: String, destinationId: String?,
                             age: Float, viewSize: CGSize) {
         paused = false
@@ -2655,8 +3110,11 @@ final class AtlasRuntime: NSObject, ObservableObject {
     }
 
     func setPaused(_ paused: Bool) {
+        if isReplay, !paused, replayFinished {
+            seekReplay(to: replayStart, preRoll: false)
+        }
         self.paused = paused
-        source.setPaused(paused)
+        if !isReplay { source.setPaused(paused) }
         lastSourceTime = CACurrentMediaTime()
         refreshUI()
     }
@@ -3580,19 +4038,51 @@ final class AtlasRuntime: NSObject, ObservableObject {
     // ── UI refresh ───────────────────────────────────────────────────────
 
     private func refreshUI() {
+        if isReplay && replayCursor != replayLastPublished {
+            replayLastPublished = replayCursor
+            replayTime = replayCursor
+        }
         let nextTotals = network.totals
         if nextTotals != totals { totals = nextTotals }
         let nextWindowStats = network.windowStats()
         if nextWindowStats != windowStats { windowStats = nextWindowStats }
-        let nextQps = source.getQps()
+        let nextQps: Float
+        if isReplay, let archive = replayArchive, archive.bucketSeconds > 0 {
+            let fraction = (replayTime - archive.start) / archive.duration
+            let index = min(archive.buckets.count - 1,
+                            max(0, Int(fraction * Double(archive.buckets.count))))
+            // A single bucket can legitimately be empty between bursts. A
+            // short rolling window keeps the inspector readable while still
+            // describing the archive rather than the live stream.
+            let low = max(0, index - 2)
+            let high = min(archive.buckets.count - 1, index + 2)
+            var total = 0
+            for i in low...high { total += archive.buckets[i].total }
+            let span = archive.bucketSeconds * Double(high - low + 1)
+            nextQps = span > 0 ? Float(total) / Float(span) : 0
+        } else {
+            nextQps = source.getQps()
+        }
         if abs(nextQps - qps) > 0.01 { qps = nextQps }
-        let nextClock = Format.clock()
+        let nextClock = isReplay ? Format.clock(replayTime) : Format.clock()
         if nextClock != clock { clock = nextClock }
         let nextFeedCount = source.recent.count
         if nextFeedCount != feedCount { feedCount = nextFeedCount }
-        let nextMotion = paused ? "paused" : (speed == 1 ? "streaming" : "streaming · \(Format.rate(speed))×")
+        let nextMotion: String
+        if isReplay {
+            if replayFinished {
+                nextMotion = "replay complete"
+            } else if paused {
+                nextMotion = "replay paused"
+            } else {
+                nextMotion = "replay · \(Format.rate(replayRate))×"
+            }
+        } else {
+            nextMotion = paused ? "paused" : (speed == 1 ? "streaming" : "streaming · \(Format.rate(speed))×")
+        }
         if nextMotion != motionStateText { motionStateText = nextMotion }
-        let nextAgo = source.recent.first.map { Format.ago($0.ts) } ?? "observing now"
+        let nextAgo = isReplay ? "at \(Format.clock(replayTime))"
+            : (source.recent.first.map { Format.ago($0.ts) } ?? "observing now")
         if nextAgo != lastEventAgo { lastEventAgo = nextAgo }
         buildPulseIfNeeded()
         publishPulse()
@@ -3617,7 +4107,8 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     private func refreshFeed() {
         var rows: [FeedRow] = []
-        for event in source.recent {
+        let events = isReplay ? replayRecent : source.recent
+        for event in events {
             guard event.destination.windowVisible else { continue }
             if filter != .all && event.status != filter.status { continue }
             rows.append(FeedRow(
@@ -3665,7 +4156,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
     // ── inspector data ──────────────────────────────────────────────────
 
     func recentEvents(deviceId: String? = nil, destinationId: String? = nil) -> [QueryEvent] {
-        source.recent.filter { event in
+        (isReplay ? replayRecent : source.recent).filter { event in
             event.destination.windowVisible &&
             (deviceId == nil || event.deviceId == deviceId) &&
             (destinationId == nil || event.destinationId == destinationId)

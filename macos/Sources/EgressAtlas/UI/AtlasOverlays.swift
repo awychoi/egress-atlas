@@ -112,6 +112,9 @@ struct AtlasChrome: View {
                     Spacer()
                     AtlasDock(runtime: runtime, metrics: metrics)
                         .padding(.bottom, 18)
+                        .popover(isPresented: $runtime.replayJumpOpen, arrowEdge: .bottom) {
+                            ReplayJumpCard(runtime: runtime, metrics: metrics)
+                        }
                 }
                 .frame(width: geo.size.width, height: geo.size.height, alignment: .bottom)
                 .zIndex(8)

@@ -318,6 +318,10 @@ struct SettingsPanel: View {
                     .font(.atlasSans(8.2, .regular))
                     .foregroundColor(Palette.dim.color)
                     .fixedSize(horizontal: false, vertical: true)
+                Text("History playback reads the selected range from the on-disk query database and keeps the current graph.")
+                    .font(.atlasSans(8.2, .regular))
+                    .foregroundColor(Palette.dim.color)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.top, 2)
             HStack(spacing: 5) {
@@ -467,7 +471,7 @@ struct SettingsPanel: View {
                     Text("Node recoil")
                         .font(.atlasSans(10.5, .medium))
                         .foregroundColor(Palette.text2.color)
-                    Text("allowed destinations ride the inbound tangent")
+                    Text("allowed destinations take the blast as a knockback")
                         .font(.atlasSans(8.5, .regular))
                         .foregroundColor(Palette.dim.color)
                 }

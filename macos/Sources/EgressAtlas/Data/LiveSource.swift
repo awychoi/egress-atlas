@@ -100,6 +100,10 @@ final class LiveSource: AtlasTrafficSource {
     }
 
     private func weightedDevice() -> Device? {
+        weightedDevice(using: rng)
+    }
+
+    private func weightedDevice(using rng: RNG) -> Device? {
         var total: Float = 0
         var weights: [Float] = []
         for d in network.devices {
@@ -117,6 +121,10 @@ final class LiveSource: AtlasTrafficSource {
     }
 
     private func weightedEdge(_ device: Device) -> Edge? {
+        weightedEdge(device, using: rng)
+    }
+
+    private func weightedEdge(_ device: Device, using rng: RNG) -> Edge? {
         guard !device.edges.isEmpty else { return nil }
         var total: Float = 0
         var weights: [Float] = []
@@ -281,6 +289,65 @@ final class LiveSource: AtlasTrafficSource {
 
     private func emit(_ event: QueryEvent) {
         for listener in queryListeners { listener(event) }
+    }
+
+    // MARK: - Replay
+
+    /// Synthesise a deterministic archive over the requested range. The volume
+    /// tracks the demo's base rate but is capped so even a seven-day window
+    /// stays cheap to scrub. A local RNG keeps the live stream untouched.
+    func makeReplay(from startMS: Double, until endMS: Double,
+                    maxEvents: Int = 12_000) -> ReplayArchive {
+        let span = max(1, endMS - startMS)
+        let hours = span / 3_600_000
+        let expected = Int(hours * Double(baseRate) * 3600)
+        let count = max(600, min(maxEvents, expected))
+        var local = RNG(Int(startMS / 60_000) ^ Int(hours * 100) ^ 0x51a7e)
+        var events: [ReplayEvent] = []
+        events.reserveCapacity(count)
+        for index in 0..<count {
+            let ts = sampleReplayTime(start: startMS, span: span, rng: local)
+            guard let device = weightedDevice(using: local),
+                  let edge = weightedEdge(device, using: local) else { continue }
+            let blocked = edge.destination.status == .blocked
+            let latency: Int? = blocked
+                ? nil
+                : Int(((edge.destination.avgLatencyMs.map(Float.init) ?? 30)
+                       * (0.72 + local.next() * 0.62)).rounded())
+            events.append(ReplayEvent(
+                id: "demo-replay-\(index)-\(Int(ts))",
+                ts: ts,
+                deviceId: device.id,
+                destinationId: edge.destination.id,
+                latency: latency,
+                blocked: blocked
+            ))
+        }
+        var archive = ReplayArchive.build(
+            events: events,
+            start: startMS,
+            end: endMS,
+            scannedRows: expected,
+            skippedRows: 0,
+            sourceLabel: "Demo archive"
+        )
+        archive.sampled = expected > count
+        return archive
+    }
+
+    private func sampleReplayTime(start: Double, span: Double, rng: RNG) -> Double {
+        var fallback = start + span * Double(rng.next())
+        for _ in 0..<8 {
+            let candidate = start + span * Double(rng.next())
+            let date = Date(timeIntervalSince1970: candidate / 1000)
+            let components = Calendar.current.dateComponents([.hour, .minute], from: date)
+            let hour = Double(components.hour ?? 12) + Double(components.minute ?? 0) / 60
+            let peak = 0.5 + 0.5 * cos((hour - 20) / 24 * 2 * Double.pi)
+            let weight = 0.20 + 0.80 * pow(peak, 1.4)
+            if Double(rng.next()) <= weight { return candidate }
+            fallback = candidate
+        }
+        return fallback
     }
 
     func getQps(_ deviceId: String? = nil) -> Float {

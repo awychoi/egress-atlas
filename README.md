@@ -5,7 +5,9 @@
 
 Egress Atlas is a macOS app that turns your Pi-hole's DNS traffic into a map. Devices on your network sit on the surface of a globe, the domains they look up sit inside it, and every query travels along a wire between them. Allowed lookups glow gold, blocked lookups coral, and new or disappearing destinations play short animations instead of filling another log table. It opens on an offline demo network, so you can try it before connecting anything.
 
-When you connect a Pi-hole v6 server, Egress Atlas reads recent DNS queries and keeps polling for new ones. The connection is direct and read-only: the app never changes your Pi-hole configuration, keeps the API password in the macOS Keychain, and sends no data anywhere else. Set a local alias for any device or DNS destination and its cards will use that name; a device alias replaces the name while its IP stays visible, and Display → Show domain with alias adds the original domain beside a destination alias. Drag to orbit the globe, right-drag to move it around the window, and leave auto-orbit on to keep it spinning while you do; the surrounding starfield and space dust stay anchored while the globe moves.
+![Egress Atlas replaying the last six hours](docs/assets/screenshots/egress-atlas-replay.png)
+
+When you connect a Pi-hole v6 server, Egress Atlas reads recent DNS queries and keeps polling for new ones. The dock can also replay the archive: open **History**, choose the last hour, six hours, day or week, pick a start time, and play the queries back as a looping or one-shot show. The connection is direct and read-only: the app never changes your Pi-hole configuration, keeps the API password in the macOS Keychain, and sends no data anywhere else. Set a local alias for any device or DNS destination and its cards will use that name; a device alias replaces the name while its IP stays visible, and Display → Show domain with alias adds the original domain beside a destination alias. Drag to orbit the globe, right-drag to move it around the window, and leave auto-orbit on to keep it spinning while you do; the surrounding starfield and space dust stay anchored while the globe moves.
 
 ## Requirements
 
@@ -42,7 +44,7 @@ xattr -dr com.apple.quarantine "dist/Egress Atlas.app"
 
 ## Connect a Pi-hole
 
-Open **Settings → Source** (or the source chip in the top bar), enter your Pi-hole's URL — for example `http://pi.hole` — and its API password, then connect. Egress Atlas imports a six-hour snapshot and polls the last three minutes. The app reads only; it never writes configuration back to Pi-hole.
+Open **Settings → Source** (or the source chip in the top bar), enter your Pi-hole's URL — for example `http://pi.hole` — and its API password, then connect. Egress Atlas imports a six-hour snapshot and polls the last three minutes. History playback reads from Pi-hole's on-disk query database, so the app may take a moment to assemble a week. The app reads only; it never writes configuration back to Pi-hole.
 
 ## About Pi-hole
 

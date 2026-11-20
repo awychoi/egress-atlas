@@ -18,6 +18,11 @@ struct PiHoleSnapshot {
     let windowSeconds: Int
     let truncated: Bool
     let fetchedAt: Date
+    /// Oldest query still held in memory / in the on-disk database, in
+    /// milliseconds. The replay range picker uses this to avoid promising a
+    /// window the Pi-hole has already pruned.
+    var earliestTimestamp: Double? = nil
+    var earliestTimestampDisk: Double? = nil
 }
 
 enum PiHoleError: LocalizedError {
@@ -125,6 +130,75 @@ final class PiHoleClient {
         }
     }
 
+    /// Pull a bounded historical range, following the API cursor until the
+    /// caller's budget is spent. `disk` asks FTL for the long-term database
+    /// rather than the in-memory recent log, which is what makes replay across
+    /// days possible. Callers split long ranges into chunks so a busy week is
+    /// sampled across the whole window instead of truncated to its newest rows.
+    func history(from startMS: Double, until endMS: Double,
+                 limit: Int, disk: Bool = true) async throws -> PiHoleSnapshot {
+        if !password.isEmpty && sid == nil {
+            try await authenticate(force: false)
+        }
+        let from = max(0, Int(startMS / 1000))
+        let until = max(from + 1, Int(endMS / 1000))
+        let target = max(1, limit)
+        let pageSize = min(5_000, target)
+        var byID: [String: PiHoleQueryRow] = [:]
+        var cursor: Int?
+        var start = 0
+        var pages = 0
+        var earliest: Double?
+        var earliestDisk: Double?
+
+        while byID.count < target && pages < 32 {
+            let length = min(pageSize, target - byID.count)
+            let page: PiHoleQueryPage
+            do {
+                page = try await fetchPage(from: from, until: until, length: length,
+                                           cursor: cursor, start: start, disk: disk)
+            } catch let error as PiHoleError {
+                if case .http(let message) = error, message.contains("401"), !password.isEmpty {
+                    try await authenticate(force: true)
+                    page = try await fetchPage(from: from, until: until, length: length,
+                                               cursor: cursor, start: start, disk: disk)
+                } else {
+                    throw error
+                }
+            }
+            pages += 1
+            if earliest == nil { earliest = page.earliestTimestamp }
+            if earliestDisk == nil { earliestDisk = page.earliestTimestampDisk }
+            guard !page.rows.isEmpty else { break }
+            for row in page.rows where byID[row.id] == nil {
+                byID[row.id] = row
+            }
+            // FTL freezes the result with the cursor returned by the first
+            // page and paginates from it with `start`. Keep that anchor while
+            // advancing the offset; passing the anchor back is what stops new
+            // queries from shifting the pages.
+            if cursor == nil { cursor = page.cursor }
+            start += page.rows.count
+            // FTL caps a page at 10,000 rows and this caller asks for at most
+            // 5,000, so a short page means the range is exhausted.
+            if page.rawCount < length { break }
+            if start >= page.recordsFiltered { break }
+            guard let next = page.cursor, next > 0 else { break }
+            if cursor == nil { cursor = next }
+        }
+
+        let rows = byID.values.sorted { $0.timestamp < $1.timestamp }
+        return PiHoleSnapshot(
+            rows: rows,
+            endpoint: endpoint,
+            windowSeconds: max(1, until - from),
+            truncated: rows.count >= target,
+            fetchedAt: Date(),
+            earliestTimestamp: earliest,
+            earliestTimestampDisk: earliestDisk
+        )
+    }
+
     private func authenticate(force: Bool) async throws {
         if sid != nil && !force { return }
         if password.isEmpty { sid = nil; return }
@@ -153,16 +227,50 @@ final class PiHoleClient {
         self.sid = sid
     }
 
+    private struct PiHoleQueryPage {
+        let rows: [PiHoleQueryRow]
+        let rawCount: Int
+        let cursor: Int?
+        let recordsFiltered: Int
+        let earliestTimestamp: Double?
+        let earliestTimestampDisk: Double?
+    }
+
     private func fetchQueries(seconds: Int, limit: Int) async throws -> PiHoleSnapshot {
         let now = Int(Date().timeIntervalSince1970)
         let from = now - max(5, seconds)
+        let page = try await fetchPage(from: from, until: now, length: max(1, limit),
+                                       cursor: nil, start: 0, disk: false)
+        return PiHoleSnapshot(
+            rows: page.rows.sorted { $0.timestamp < $1.timestamp },
+            endpoint: endpoint,
+            windowSeconds: seconds,
+            truncated: page.rows.count >= limit || page.recordsFiltered > page.rows.count,
+            fetchedAt: Date(),
+            earliestTimestamp: page.earliestTimestamp,
+            earliestTimestampDisk: page.earliestTimestampDisk
+        )
+    }
+
+    private func fetchPage(from: Int, until: Int, length: Int,
+                           cursor: Int?, start: Int, disk: Bool) async throws -> PiHoleQueryPage {
         var components = URLComponents(url: baseURL.appendingPathComponent("api/queries"),
                                        resolvingAgainstBaseURL: false)
-        components?.queryItems = [
+        var items = [
             URLQueryItem(name: "from", value: String(from)),
-            URLQueryItem(name: "until", value: String(now)),
-            URLQueryItem(name: "length", value: String(max(1, limit))),
+            URLQueryItem(name: "until", value: String(until)),
+            URLQueryItem(name: "length", value: String(max(1, length))),
         ]
+        if let cursor, cursor > 0 {
+            items.append(URLQueryItem(name: "cursor", value: String(cursor)))
+        }
+        if start > 0 {
+            items.append(URLQueryItem(name: "start", value: String(start)))
+        }
+        if disk {
+            items.append(URLQueryItem(name: "disk", value: "true"))
+        }
+        components?.queryItems = items
         guard let url = components?.url else {
             throw PiHoleError.invalidURL("The Pi-hole URL is not valid.")
         }
@@ -178,13 +286,17 @@ final class PiHoleClient {
         for raw in rawRows {
             if let row = parseRow(raw) { rows.append(row) }
         }
-        let filtered = (object["recordsFiltered"] as? Int) ?? rawRows.count
-        return PiHoleSnapshot(
-            rows: rows.sorted { $0.timestamp < $1.timestamp },
-            endpoint: endpoint,
-            windowSeconds: seconds,
-            truncated: rawRows.count >= limit || filtered > rawRows.count,
-            fetchedAt: Date()
+        let filtered = (object["recordsFiltered"] as? NSNumber)?.intValue ?? rawRows.count
+        let cursorValue = (object["cursor"] as? NSNumber)?.intValue
+        let earliest = (object["earliest_timestamp"] as? NSNumber)?.doubleValue
+        let earliestDisk = (object["earliest_timestamp_disk"] as? NSNumber)?.doubleValue
+        return PiHoleQueryPage(
+            rows: rows,
+            rawCount: rawRows.count,
+            cursor: cursorValue,
+            recordsFiltered: filtered,
+            earliestTimestamp: earliest.map { $0 * 1000 },
+            earliestTimestampDisk: earliestDisk.map { $0 * 1000 }
         )
     }
 

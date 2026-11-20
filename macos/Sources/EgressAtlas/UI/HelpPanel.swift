@@ -49,6 +49,13 @@ struct HelpPanel: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 10)
 
+                    Text("The dock timeline is the time machine. Open History, choose a range and a start time, then play the archive back. Drag the timeline to any moment, click 1×, 60×, 600× or 3600× to change the compression, and press Live to return to the Pi-hole clock.")
+                        .font(.atlasSans(8.5, .regular))
+                        .lineSpacing(1.5)
+                        .foregroundColor(Palette.dim.color)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 10)
+
                     legendSection
                         .padding(.top, 12)
 
@@ -163,7 +170,8 @@ struct HelpPanel: View {
             VStack(alignment: .leading, spacing: 0) {
                 keyRow("⌘K", "Search and run an action")
                 keyRow("[  ]", "Toggle the network and query panels")
-                keyRow("Space", "Pause or resume live traffic")
+                keyRow("Space", "Pause or resume live traffic or replay")
+                keyRow("L", "Return to live traffic")
                 keyRow("F", "Cycle All · Allowed · Blocked")
                 keyRow("R", "Reset the camera")
                 keyRow("O", "Toggle auto-orbit")

@@ -94,8 +94,12 @@ struct RootView: View {
                 runtime.resetCamera()
                 return nil
             case "l":
-                runtime.setPaused(false)
-                runtime.setSpeed(1)
+                if runtime.isReplay {
+                    runtime.goLive()
+                } else {
+                    runtime.setPaused(false)
+                    runtime.setSpeed(1)
+                }
                 return nil
             case "o":
                 runtime.setSpin(!runtime.spinEnabled)

@@ -37,8 +37,18 @@ final class NodeView {
     var status: DNSStatus = .allowed
     var flashAge: Float = 99
     var recoilActive = false
-    var recoilAge: Float = 0
     var recoilDir = Vec3(0, 0, -1)
+    /// Displacement and velocity of the visible assembly. The anchor stays
+    /// fixed; only the orb, rings and orbiters move as one body.
+    private var recoilPosition = Vec3.zero
+    private var recoilVelocity = Vec3.zero
+    private static let recoilStiffness: Float = 140
+    /// Critical damping for the stiffness above (`2 * sqrt(k)`), so the hit
+    /// returns to rest without a springy second bounce.
+    private static let recoilDamping: Float = 23.7
+    /// Impulse speed in radii per second. At the critical damping above this
+    /// peaks just under half a radius of travel before settling.
+    private static let recoilImpulse: Float = 24
 
     private var orbitTilt: Float
     private var orbitRoll: Float
@@ -88,11 +98,7 @@ final class NodeView {
     var dimFactor: Float { dimmed ? 0.32 : 1 }
 
     var recoilOffset: Vec3 {
-        guard recoilActive else { return .zero }
-        let t = recoilAge / 0.66
-        if t >= 1 { return .zero }
-        let offset = sin(9.4 * t) * exp(-3.8 * t) * radius * 0.5
-        return recoilDir * offset
+        recoilActive ? recoilPosition : .zero
     }
 
     var labelPosition: Vec3 {
@@ -105,13 +111,20 @@ final class NodeView {
         let canRecoil = recoil && status != .blocked
         if canRecoil {
             recoilActive = true
-            recoilAge = 0
             // `direction` is the inbound arrival tangent (source -> node).
-            // Knockback must travel *against* the incoming packet, otherwise
-            // the node appears to be pushed forward into the blast. Keep the
-            // anchor (and therefore the wire and hit plane) fixed; only the
-            // visible assembly moves.
-            recoilDir = (-direction).normalized
+            // The blast impulse carries the orb away from the packet's origin,
+            // along the packet's travel direction. Add the impulse to the
+            // current velocity so rapid hits stack instead of snapping the
+            // assembly back to its anchor between impacts.
+            recoilDir = direction.normalized
+            if !recoilDir.x.isFinite || !recoilDir.y.isFinite || !recoilDir.z.isFinite {
+                recoilDir = Vec3(0, 0, -1)
+            }
+            recoilVelocity += recoilDir * (radius * Self.recoilImpulse)
+            let maxSpeed = radius * 34
+            if recoilVelocity.length > maxSpeed {
+                recoilVelocity = recoilVelocity.withLength(maxSpeed)
+            }
         } else {
             stopRecoil()
         }
@@ -119,7 +132,8 @@ final class NodeView {
 
     func stopRecoil() {
         recoilActive = false
-        recoilAge = 0
+        recoilPosition = .zero
+        recoilVelocity = .zero
     }
 
     func canPick() -> Bool { !destroyed && presence > 0.25 }
@@ -131,8 +145,15 @@ final class NodeView {
             flashAge += dt
         }
         if recoilActive {
-            recoilAge += dt
-            if recoilAge / 0.66 >= 1 { stopRecoil() }
+            let step = min(dt, 1.0 / 20.0)
+            let accel = recoilPosition * -Self.recoilStiffness
+                - recoilVelocity * Self.recoilDamping
+            recoilVelocity += accel * step
+            recoilPosition += recoilVelocity * step
+            if recoilPosition.length < radius * 0.002,
+               recoilVelocity.length < radius * 0.02 {
+                stopRecoil()
+            }
         }
         orbitYaw += dt * 0.22
         _ = elapsed

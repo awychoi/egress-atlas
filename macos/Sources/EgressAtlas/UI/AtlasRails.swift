@@ -224,8 +224,20 @@ struct DeviceIndexRow: View {
     let selected: Bool
     let hovered: Bool
 
-    private var qps: Float { runtime.source.getQps(device.id) }
-    private var lastSeenText: String { Format.ago(device.lastSeen) }
+    private var qps: Float { runtime.isReplay ? 0 : runtime.source.getQps(device.id) }
+    private var lastSeenText: String {
+        runtime.isReplay ? Format.clock(device.lastSeen) : Format.ago(device.lastSeen)
+    }
+    private var rateText: String {
+        runtime.isReplay ? Format.compact(device.liveQueries) : Format.rate(qps)
+    }
+    private var barFraction: CGFloat {
+        if runtime.isReplay {
+            let maxQueries = max(1, runtime.network.devices.map(\.liveQueries).max() ?? 1)
+            return CGFloat(device.liveQueries) / CGFloat(maxQueries)
+        }
+        return min(1, CGFloat(qps / maxQps))
+    }
     private var displayName: String { runtime.deviceDisplayName(device) }
     private var addressText: String { runtime.deviceAddressText(device) }
     private var maxQps: Float {
@@ -258,20 +270,22 @@ struct DeviceIndexRow: View {
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 3) {
                 HStack(spacing: 1) {
-                    Text(Format.rate(qps))
+                    Text(rateText)
                         .font(.atlasMono(8, .regular))
                         .foregroundColor(Palette.text2.color)
-                    Text("/s")
-                        .font(.atlasMono(6, .regular))
-                        .foregroundColor(Palette.faint.color)
+                    if !runtime.isReplay {
+                        Text("/s")
+                            .font(.atlasMono(6, .regular))
+                            .foregroundColor(Palette.faint.color)
+                    }
                 }
                 ZStack(alignment: .leading) {
                     Capsule().fill(Palette.text.opacity(0.07))
                     Capsule().fill(Palette.signal.opacity(0.6))
-                        .frame(width: 38 * max(0.02, min(1, CGFloat(qps / maxQps))))
+                        .frame(width: 38 * max(0.02, barFraction))
                 }
                 .frame(width: 38, height: 2)
-                Text("last: \(lastSeenText)")
+                Text(runtime.isReplay ? "graph total" : "last: \(lastSeenText)")
                     .font(.atlasMono(6.4, .regular))
                     .foregroundColor(device.windowVisible ? Palette.dim.color : Palette.coral.opacity(0.82))
                     .lineLimit(1)
@@ -421,7 +435,9 @@ struct WindowControl: View {
 
             if metrics.showWindowCopy {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Devices and destination orbs active in the last \(Windows.label(hours: runtime.windowHours)) stay on the globe.")
+                    Text(runtime.isReplay
+                         ? "Replay owns presence while it runs. The live history window returns when you press Live."
+                         : "Devices and destination orbs active in the last \(Windows.label(hours: runtime.windowHours)) stay on the globe.")
                         .font(.atlasSans(8.2, .regular))
                         .foregroundColor(Palette.dim.color)
                         .fixedSize(horizontal: false, vertical: true)
@@ -439,6 +455,8 @@ struct WindowControl: View {
                            startPoint: .top, endPoint: .bottom)
         )
         .overlay(alignment: .top) { Hairline() }
+        .disabled(runtime.isReplay)
+        .opacity(runtime.isReplay ? 0.55 : 1)
     }
 }
 
@@ -449,7 +467,7 @@ struct RailSummary: View {
         let blockedShare = totals.queries > 0 ? Double(totals.blocked) / Double(totals.queries) * 100 : 0
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
-                Eyebrow(text: "Today", size: 6.5, color: Palette.dim.color, trackingEm: 0.16)
+                Eyebrow(text: runtime.isReplay ? "Loaded" : "Today", size: 6.5, color: Palette.dim.color, trackingEm: 0.16)
                 Spacer()
                 Text(String(format: "%.1f%% BLOCKED", blockedShare))
                     .font(.atlasMono(6.3, .regular))
@@ -526,22 +544,26 @@ struct TrafficRail: View {
                     Eyebrow(text: "Queries", size: 8, color: Palette.gold.color, trackingEm: 0.12)
                     Spacer(minLength: 4)
                     HStack(spacing: 4) {
-                        Circle().fill(Palette.sage.color).frame(width: 3.5, height: 3.5)
-                            .shadow(color: Palette.sage.opacity(0.8), radius: 3)
-                        Text("LIVE")
+                        Circle()
+                            .fill(runtime.isReplay ? Palette.gold.color : Palette.sage.color)
+                            .frame(width: 3.5, height: 3.5)
+                            .shadow(color: (runtime.isReplay ? Palette.gold : Palette.sage).opacity(0.8), radius: 3)
+                        Text(runtime.isReplay ? "REPLAY" : "LIVE")
                             .font(.atlasMono(7, .regular))
                             .tracking(7 * 0.12)
-                            .foregroundColor(Palette.sage.color)
+                            .foregroundColor(runtime.isReplay ? Palette.gold.color : Palette.sage.color)
                     }
                     RailCloseButton(left: false) { runtime.rightRailOpen = false }
                 }
-                Text("Recent queries")
+                Text(runtime.isReplay ? "Replay queries" : "Recent queries")
                     .font(.atlasSans(metrics.railHeadTitleSize, .medium))
                     .tracking(-metrics.railHeadTitleSize * 0.032)
                     .foregroundColor(Palette.text.color)
                     .padding(.top, 8)
                 if metrics.showRailCopy {
-                    Text("Every query on this network, newest first. Select a row to follow the path.")
+                    Text(runtime.isReplay
+                         ? "The queries played around the playhead, newest first. Select a row to follow the path."
+                         : "Every query on this network, newest first. Select a row to follow the path.")
                         .font(.atlasSans(10.5, .regular))
                         .lineSpacing(2)
                         .foregroundColor(Palette.muted.color)
@@ -561,9 +583,9 @@ struct TrafficRail: View {
             }
 
             HStack {
-                Eyebrow(text: "Latest", size: 7.5, color: Palette.gold.color, trackingEm: 0.14)
+                Eyebrow(text: runtime.isReplay ? "Played" : "Latest", size: 7.5, color: Palette.gold.color, trackingEm: 0.14)
                 Spacer()
-                Text("\(runtime.feedCount)")
+                Text("\(runtime.isReplay ? runtime.feed.count : runtime.feedCount)")
                     .font(.atlasMono(6.5, .regular))
                     .foregroundColor(Palette.faint.color)
             }
@@ -599,13 +621,17 @@ struct TrafficRail: View {
             }
 
             HStack(spacing: 7) {
-                Circle().fill(runtime.paused ? Palette.coral.color : Palette.sage.color)
+                Circle().fill(runtime.paused ? Palette.coral.color
+                              : (runtime.isReplay ? Palette.gold.color : Palette.sage.color))
                     .frame(width: 4, height: 4)
-                    .shadow(color: (runtime.paused ? Palette.coral : Palette.sage).opacity(0.8), radius: 3)
-                Text(runtime.paused ? "STREAM PAUSED · PRESS LIVE OR SPACE"
-                     : (runtime.isLiveSource
-                        ? "PI-HOLE LIVE · \(runtime.sourceEndpoint ?? "connected") · \(String(format: "%.1f", runtime.source.effectiveRate))/S"
-                        : "DEMO SOURCE · \(String(format: "%.1f", runtime.source.effectiveRate))/S · LOCAL ONLY"))
+                    .shadow(color: (runtime.paused ? Palette.coral
+                                    : (runtime.isReplay ? Palette.gold : Palette.sage)).opacity(0.8), radius: 3)
+                Text(runtime.isReplay
+                     ? "REPLAY · \(runtime.replaySourceLabel.uppercased()) · \(Int(runtime.replayRate))×"
+                     : (runtime.paused ? "STREAM PAUSED · PRESS LIVE OR SPACE"
+                        : (runtime.isLiveSource
+                           ? "PI-HOLE LIVE · \(runtime.sourceEndpoint ?? "connected") · \(String(format: "%.1f", runtime.source.effectiveRate))/S"
+                           : "DEMO SOURCE · \(String(format: "%.1f", runtime.source.effectiveRate))/S · LOCAL ONLY")))
                     .font(.atlasMono(6.7, .regular))
                     .tracking(6.7 * 0.07)
                     .foregroundColor(Palette.faint.color)
@@ -620,9 +646,9 @@ struct TrafficRail: View {
 
     private var summaryGrid: some View {
         let cells: [(String, String, String, Bool)] = [
-            ("Queries today", Format.count(runtime.totals.queries), "", false),
+            (runtime.isReplay ? "Graph queries" : "Queries today", Format.count(runtime.totals.queries), "", false),
             ("Blocked", Format.count(runtime.totals.blocked), "", true),
-            ("Live rate", Format.rate(runtime.qps), "/s", false),
+            (runtime.isReplay ? "Replay rate" : "Live rate", Format.rate(runtime.qps), "/s", false),
             ("Destinations", "\(runtime.windowStats.destinations)", "", false),
         ]
         return LazyVGrid(columns: [GridItem(.flexible(), spacing: 1), GridItem(.flexible(), spacing: 1)], spacing: 1) {

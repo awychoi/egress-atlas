@@ -556,6 +556,19 @@ enum Format {
         return formatter.string(from: Date(timeIntervalSince1970: timestampMS / 1000))
     }
 
+    /// Compact local date + 24-hour clock for the replay transport, e.g.
+    /// "Nov 19 · 14:32".
+    static func dayTime(_ timestampMS: Double) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MMM d · HH:mm"
+        return formatter.string(from: Date(timeIntervalSince1970: timestampMS / 1000))
+    }
+
+    static func dayTime(_ date: Date) -> String {
+        dayTime(date.timeIntervalSince1970 * 1000)
+    }
+
     static func ago(_ timestampMS: Double, now: Double = Date().timeIntervalSince1970 * 1000) -> String {
         guard timestampMS > 0 else { return "—" }
         let s = max(0, Int(((now - timestampMS) / 1000).rounded()))

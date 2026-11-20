@@ -195,13 +195,13 @@ struct InspectorPanel: View {
             }
             .id("alias-device-\(device.id)")
             statsGrid([
-                ("Queries today", Format.count(device.liveQueries), false),
+                (runtime.isReplay ? "Graph queries" : "Queries today", Format.count(device.liveQueries), false),
                 ("Blocked", Format.count(device.liveBlocked), device.liveBlocked > 0),
                 ("Destinations", "\(visibleDestinations)", false),
-                ("Live rate", "\(Format.rate(qps))/s", false),
+                (runtime.isReplay ? "Replay rate" : "Live rate", runtime.isReplay ? "—" : "\(Format.rate(qps))/s", false),
             ])
             VStack(alignment: .leading, spacing: 0) {
-                blockHeader("Top destinations", value: Format.ago(device.lastSeen).uppercased())
+                blockHeader("Top destinations", value: (runtime.isReplay ? "REPLAY" : Format.ago(device.lastSeen)).uppercased())
                 ForEach(topDestinations(device), id: \.id) { edge in
                     InspectorRouteRow(
                         dot: edge.destination.status == .blocked ? Palette.coral.color : Palette.gold.color,
@@ -258,10 +258,10 @@ struct InspectorPanel: View {
             }
             .id("alias-destination-\(destination.id)")
             statsGrid([
-                ("Queries today", Format.count(destination.liveQueries), false),
+                (runtime.isReplay ? "Graph queries" : "Queries today", Format.count(destination.liveQueries), false),
                 ("Blocked", Format.count(destination.liveBlocked), true),
                 ("Devices", "\(destination.devices.count)", false),
-                ("Last seen", Format.ago(destination.lastSeen), false),
+                ("Last seen", runtime.isReplay ? Format.clock(destination.lastSeen) : Format.ago(destination.lastSeen), false),
             ])
             VStack(alignment: .leading, spacing: 0) {
                 blockHeader("Seen from", value: "\(destination.devices.count) device\(destination.devices.count == 1 ? "" : "s")")
@@ -316,7 +316,7 @@ struct InspectorPanel: View {
         let via = [deviceName, deviceAddress].compactMap { $0 }.joined(separator: " · ")
         let destinationLine = [destinationName, destinationOriginal].compactMap { $0 }.joined(separator: " · ")
         return VStack(alignment: .leading, spacing: 0) {
-            titleBlock(subtitle: "via \(via)\nlast seen \(Format.ago(edge.lastSeen))",
+            titleBlock(subtitle: "via \(via)\nlast seen \(runtime.isReplay ? Format.clock(edge.lastSeen) : Format.ago(edge.lastSeen))",
                        blocked: blocked, title: destinationName)
             AliasEditor(runtime: runtime, original: destination.domain,
                         alias: runtime.destinationAlias(destination), target: .destination) { value in

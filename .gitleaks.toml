@@ -1,0 +1,14 @@
+# Gitleaks configuration for Egress Atlas.
+#
+# Extends the built-in rule set. The only exception is the app's namespaced
+# UserDefaults keys, which are plain identifiers but trip generic-api-key on
+# entropy alone (e.g. "egress-atlas.pihole.population.v1").
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Egress Atlas UserDefaults key namespaces are not credentials."
+regexTarget = "secret"
+regexes = [
+  '''^egress-atlas\.[a-z0-9]+\.[a-z0-9.]+$''',
+]

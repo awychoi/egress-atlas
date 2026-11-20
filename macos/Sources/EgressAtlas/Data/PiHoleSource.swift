@@ -108,6 +108,116 @@ final class PiHoleSource: AtlasTrafficSource {
         return Float(total) / 6
     }
 
+    // MARK: - Replay
+
+    /// Fetch a historical range from FTL's on-disk query database and map the
+    /// rows onto the current graph. Long ranges are fetched in six-hour chunks
+    /// so sampling stays spread across the whole window instead of keeping only
+    /// the newest rows. Rows for clients or domains outside the current top-N
+    /// graph are counted as skipped.
+    func loadReplay(from startMS: Double, until endMS: Double,
+                    maxEvents: Int = 60_000) async throws -> ReplayArchive {
+        let span = max(1, endMS - startMS)
+        let chunkMS = 6.0 * 3_600_000
+        let chunks = max(1, min(28, Int(ceil(span / chunkMS))))
+        let budget = max(300, maxEvents / chunks)
+        // Read beyond the per-chunk budget before sampling. Picking evenly
+        // across the scanned slice is much more representative than keeping
+        // only the newest rows of every chunk.
+        let scanBudget = min(10_000, max(budget * 4, 1_000))
+        var events: [ReplayEvent] = []
+        var seen = Set<String>()
+        var scanned = 0
+        var skipped = 0
+        var earliest: Double?
+        var diskSupported = true
+        var truncated = false
+
+        for index in 0..<chunks {
+            let from = startMS + span * Double(index) / Double(chunks)
+            let to = startMS + span * Double(index + 1) / Double(chunks)
+            var snapshot: PiHoleSnapshot
+            do {
+                snapshot = try await client.history(from: from, until: to,
+                                                    limit: scanBudget, disk: diskSupported)
+            } catch {
+                // Older FTL builds may reject the disk parameter. Fall back to
+                // the in-memory log once, but do not hide a real network or
+                // authentication failure.
+                guard diskSupported,
+                      let hole = error as? PiHoleError,
+                      case .http(let message) = hole,
+                      message.contains("400") || message.lowercased().contains("disk") else {
+                    throw error
+                }
+                diskSupported = false
+                snapshot = try await client.history(from: from, until: to,
+                                                    limit: scanBudget, disk: false)
+            }
+            if earliest == nil {
+                earliest = snapshot.earliestTimestampDisk ?? snapshot.earliestTimestamp
+            }
+            // FTL's recordsFiltered is the whole-database count, not the
+            // range count, so use the scan budget saturation instead.
+            if snapshot.rows.count >= scanBudget { truncated = true }
+            scanned += snapshot.rows.count
+            var chunkEvents: [ReplayEvent] = []
+            for row in snapshot.rows {
+                guard seen.insert(row.id).inserted else { continue }
+                guard let event = replayEvent(row) else {
+                    skipped += 1
+                    continue
+                }
+                chunkEvents.append(event)
+            }
+            if chunkEvents.count > budget {
+                chunkEvents = evenlySample(chunkEvents, target: budget)
+                truncated = true
+            }
+            events.append(contentsOf: chunkEvents)
+        }
+
+        var archive = ReplayArchive.build(
+            events: events,
+            start: startMS,
+            end: endMS,
+            scannedRows: scanned,
+            skippedRows: skipped,
+            sourceLabel: diskSupported ? "Pi-hole history" : "Pi-hole recent",
+            earliestAvailable: earliest
+        )
+        archive.sampled = archive.sampled || truncated
+        return archive
+    }
+
+    private func evenlySample(_ events: [ReplayEvent], target: Int) -> [ReplayEvent] {
+        guard events.count > target, target > 0 else { return events }
+        var sampled: [ReplayEvent] = []
+        sampled.reserveCapacity(target)
+        let step = Double(events.count) / Double(target)
+        for index in 0..<target {
+            let offset = min(events.count - 1, Int(Double(index) * step))
+            sampled.append(events[offset])
+        }
+        return sampled
+    }
+
+    private func replayEvent(_ row: PiHoleQueryRow) -> ReplayEvent? {
+        guard let device = deviceByIP[row.clientIP],
+              let destination = destinationByDomain[row.domain],
+              edgeByKey["\(device.id)::\(destination.id)"] != nil else {
+            return nil
+        }
+        return ReplayEvent(
+            id: row.id,
+            ts: row.timestamp,
+            deviceId: device.id,
+            destinationId: destination.id,
+            latency: row.latencyMs,
+            blocked: destination.status == .blocked
+        )
+    }
+
     private func poll() {
         guard !cancelled, !paused, !polling else { return }
         polling = true

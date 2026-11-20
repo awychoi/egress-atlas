@@ -18,7 +18,6 @@ macos/screenshots/
 /archive/
 
 # Local agent notes
-/AGENTS.md
 
 # Local credentials
 .env
@@ -39,3 +38,5 @@ brand-identity/
 
 # Local logs
 *.log
+
+/AGENTS.md

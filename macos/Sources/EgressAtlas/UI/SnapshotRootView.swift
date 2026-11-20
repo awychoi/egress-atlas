@@ -23,6 +23,14 @@ struct SnapshotRootView: View {
                     .zIndex(2)
                 AtlasChrome(runtime: runtime, metrics: metrics)
                     .zIndex(5)
+                if AtlasRenderFlags.snapshot && runtime.replayJumpOpen {
+                    VStack {
+                        Spacer()
+                        ReplayJumpCard(runtime: runtime, metrics: metrics)
+                            .padding(.bottom, 168)
+                    }
+                    .zIndex(30)
+                }
                 if showBoot {
                     BootOverlay(runtime: runtime)
                         .zIndex(40)

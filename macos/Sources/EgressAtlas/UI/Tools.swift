@@ -27,6 +27,8 @@ enum SelfTestTool {
         print("window checks failed=\(windowFailed)")
         let liveFailed = runtime.debugLiveChecks()
         print("live checks failed=\(liveFailed)")
+        let replayFailed = runtime.debugReplayChecks()
+        print("replay checks failed=\(replayFailed)")
         let net2 = DemoNetwork(seed: 20261116)
         let src = LiveSource(network: net2, seed: 20261123, rate: 2.85)
         var q = 0
@@ -77,6 +79,23 @@ enum LiveTestTool {
         Task {
             do {
                 let client = try PiHoleClient(rawURL: rawURL, password: password, insecure: insecure)
+                if args.contains("--history-test") {
+                    let now = Date().timeIntervalSince1970 * 1000
+                    let hours = Double(value("--history-hours") ?? "24") ?? 24
+                    let from = now - hours * 3_600_000
+                    let snapshot = try await client.history(from: from, until: now,
+                                                            limit: 20_000, disk: true)
+                    let network = try LiveNetworkBuilder.make(snapshot: snapshot)
+                    let source = PiHoleSource(network: network, client: client, initial: snapshot)
+                    let archive = try await source.loadReplay(from: from, until: now, maxEvents: 20_000)
+                    print("history rows=\(snapshot.rows.count) earliest=\(snapshot.earliestTimestampDisk ?? -1)")
+                    print("history network devices=\(network.devices.count) destinations=\(network.destinations.count)")
+                    print("replay events=\(archive.events.count) scanned=\(archive.scannedRows) skipped=\(archive.skippedRows) buckets=\(archive.buckets.count) sampled=\(archive.sampled)")
+                    if let first = archive.events.first, let last = archive.events.last {
+                        print("replay span=\(Int((last.ts - first.ts) / 1000))s")
+                    }
+                    exit(0)
+                }
                 let snapshot = try await client.snapshot()
                 let network = try LiveNetworkBuilder.make(snapshot: snapshot)
                 print("endpoint=\(snapshot.endpoint)")
@@ -117,6 +136,24 @@ enum LiveTestTool {
                 await MainActor.run {
                     print("runtime live=\(runtimeBox.isLiveSource) devices=\(runtimeBox.network.devices.count) destinations=\(runtimeBox.network.destinations.count) feed=\(runtimeBox.feed.count) error=\(runtimeBox.sourceError ?? "none")")
                     print("keychain hasPassword=\(PiHoleCredentials.hasPassword) savedURL=\(PiHoleCredentials.savedURL) notice=\(runtimeBox.sourceNotice ?? "none")")
+                    runtimeBox.enterReplay(hours: 24)
+                }
+                let replayDeadline = Date().addingTimeInterval(30)
+                while Date() < replayDeadline {
+                    let state = await MainActor.run { (runtimeBox.isReplay, runtimeBox.replayLoading) }
+                    if state.0 || !state.1 { break }
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                }
+                await MainActor.run {
+                    print("runtime replay=\(runtimeBox.isReplay) events=\(runtimeBox.replayTotal) scanned=\(runtimeBox.replayScanned) skipped=\(runtimeBox.replaySkipped) rate=\(runtimeBox.replayRate) error=\(runtimeBox.sourceError ?? "none")")
+                    if runtimeBox.isReplay {
+                        runtimeBox.seekReplay(fraction: 0.5)
+                        print("runtime replay seek=\(Int(runtimeBox.replayProgress * 100))% label=\(runtimeBox.replaySourceLabel)")
+                    }
+                    runtimeBox.goLive()
+                    print("runtime back live=\(!runtimeBox.isReplay)")
+                }
+                await MainActor.run {
                     runtimeBox.refreshLiveSource(rememberChoice: false)
                 }
                 try? await Task.sleep(nanoseconds: 4_000_000_000)
@@ -227,10 +264,17 @@ enum SnapshotTool {
             }
         }
         runtime.advanceForSnapshot(seconds: seconds)
-        if !args.contains("--live") {
+        if !args.contains("--live") && !args.contains("--replay") {
             runtime.clearEffectsForSnapshot()
         }
         applyCamera(args: args, runtime: runtime)
+        if args.contains("--replay") {
+            let hours = Float(Double(value(after: "--replay-hours", in: args) ?? "6") ?? 6)
+            let progress = Double(value(after: "--replay-progress", in: args) ?? "0.55") ?? 0.55
+            let info = runtime.debugReplay(hours: hours, progress: progress,
+                                           settle: args.contains("--clear") ? 0 : 0.35)
+            print("replay events=\(info.events) buckets=\(info.buckets)")
+        }
         if let hours = value(after: "--window", in: args), let value = Float(hours) {
             runtime.setWindowHours(value)
             runtime.advanceForSnapshot(seconds: 2.5)
@@ -273,6 +317,8 @@ enum SnapshotTool {
             runtime.leftRailOpen = true
             runtime.rightRailOpen = true
         }
+        if args.contains("--no-toast") { runtime.toast = nil }
+        if args.contains("--replay-jump") { runtime.replayJumpOpen = true }
         if args.contains("--settings") { runtime.settingsOpen = true }
         if args.contains("--help") {
             runtime.settingsOpen = false

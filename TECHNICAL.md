@@ -20,7 +20,7 @@ The history window runs from one hour to seven days and follows each body's `las
 
 `main.swift` provides four headless modes: `--snapshot`, `--self-test`, `--live-test` and `--make-icon`. Otherwise it starts the AppKit app: a full-size-content `NSWindow` with SwiftUI chrome over a full-window `MTKView`.
 
-`AtlasRuntime` owns the network, source, selection, overlays, camera and playback state. The view's display link advances the runtime and calls `MTKView.draw()` directly. `ATLAS_CLOCK=timer|async` selects fallback clocks for measurement. The direct draw avoids an extra AppKit display pass that used to cap presentation near 24 fps.
+`AtlasRuntime` owns the network, source, selection, overlays, camera, replay archive and playback state. The view's display link advances the runtime and calls `MTKView.draw()` directly. `ATLAS_CLOCK=timer|async` selects fallback clocks for measurement. The direct draw avoids an extra AppKit display pass that used to cap presentation near 24 fps.
 
 The renderer uses a linear HDR `rgba16Float` scene with 4× MSAA, double-buffered post targets and a final `bgra8Unorm` pass. Depth of field derives from the globe's front intersection, so it needs no second scene pass; the focus ray is reconstructed through the same lens shift as the scene projection, so panning the globe does not push it into the far blur. Bloom runs a five-mip chain capped at 960×540 device pixels. ACES tone mapping and sRGB transfer are followed by vignette and grain, and render scale is capped at 1.75×.
 
@@ -28,15 +28,23 @@ The field includes a dotted shell, dust, a latitude/longitude grid, three armill
 
 ## Pi-hole source
 
-`PiHoleClient` is a direct, read-only Pi-hole v6 client. It authenticates with `POST /api/auth`, requests `GET /api/queries` for a six-hour window of up to 5,000 rows, and keeps the session id in memory.
+`PiHoleClient` is a direct, read-only Pi-hole v6 client. It authenticates with `POST /api/auth`, requests `GET /api/queries` for a six-hour window of up to 5,000 rows, and keeps the session id in memory. A replay fetch uses the same endpoint with `disk=true`, freezes the API cursor and pages with the `start` offset, and splits a long range into six-hour chunks so sampling is spread across the window.
 
 The Source panel offers 25, 50, 100 and All populations. Top 100 is the default. Limited modes keep the busiest clients and destinations, with blocked destinations reserved; All admits every client and domain in the sample. The snapshot becomes the same graph as the demo, and the history window decides which orbs are visible.
 
 `PiHoleSource` imports unseen query ids and polls the last 180 seconds every 1.5 seconds. Rows outside the selected population count as off-graph. The client sends no configuration, aliases or filters back to Pi-hole. The URL and certificate preference live in user defaults; the API password lives in the login Keychain under `com.egressatlas.pihole`; the request session is ephemeral. The app remembers the last source and reconnects from the saved URL and Keychain, falling back to demo with a notice if Pi-hole is unreachable. Use `https://` for a remote Pi-hole; `http://` works locally.
 
+## Playback
+
+The dock can replay the query archive instead of following live traffic. **History** opens a range picker (1 hour, 6 hours, 1 day, 7 days) and a local date/time field. The demo synthesises a deterministic archive; a Pi-hole session fetches the range from FTL's on-disk query database. The playable archive is bounded at 60,000 rows for Pi-hole and 12,000 synthetic events for the demo. Each Pi-hole chunk is overscanned and then evenly sampled down to its share of that budget. Rows are mapped back onto the current top-N graph; clients or domains outside that graph are counted as off-graph. A dense range is sampled, and the transport marks it.
+
+Playback has its own clock. The dock shows the replay date/time, a density histogram for the selected range, a draggable playhead, play/pause, 1×/60×/600×/3600× compression, and **Live** to return. The default compression aims to play the whole range in about three minutes; the user can override it. Seeking clears the current studies and pre-rolls the last 1.5 seconds of queries so a jump reads as a cut with context. The renderer's signal and effect budgets still apply: playback emits at most 30 events per second, keeps the playhead honest, and drops surplus events for that slice. Loop restarts at the range start; otherwise the transport stops at the range end until the user scrubs, replays or returns live.
+
+The graph stays fixed at the loaded snapshot, so playback does not rebuild the layout. This keeps the stage stable and a replay repeatable, at the cost of ignoring off-graph rows. Pi-hole retention follows FTL's query-database setting, which is longer than the seven-day picker on a default install.
+
 ## Interaction
 
-Display and motion settings persist in user defaults: labels, history window, auto-orbit, window-drag coupling, response, node recoil, study speed and the hit-plane overlay. Playback, auto tour, pause and the outcome filter last for the session.
+Display and motion settings persist in user defaults: labels, history window, auto-orbit, window-drag coupling, response, node recoil, study speed and the hit-plane overlay. Replay range, compression, loop, auto tour, pause and the outcome filter last for the session.
 
 The dock has zoom, rotate, reset, top view, Face hit and auto-orbit. Dragging the field orbits the camera; right-dragging moves the globe freely around the viewport with an off-axis (lens-shift) projection. Because the camera keeps orbiting the same look target, an enabled auto-orbit continues to spin the globe around its own axis while it is moved. Moving the window leaves the camera still unless Display → Window drag spins globe is enabled. The window clamps to 680 × 700 so the top bar and transport timeline stay intact. Keyboard shortcuts cover camera, playback, panels and search.
 
@@ -106,4 +114,4 @@ The demo runs offline with local assets. The app has no accounts, telemetry or r
 
 ## Limits
 
-Live data comes from a six-hour sample. The 25–100 populations stay compact; All includes every client and domain and can overlap into a bright field. Multi-day history and replay are absent; live data lives in memory. Aliases are local to this Mac and are never written back to Pi-hole. The build is ad-hoc signed and not notarized. The globe is a summarized accessibility element, while the rails and inspector rows are fully labeled. Field labels stay compact at small window sizes. Destination relaxation is pair-based, so a live All population is layout-bound around 57 fps on a M1 Max MBP.
+Live data comes from a six-hour sample. The 25–100 populations stay compact; All includes every client and domain and can overlap into a bright field. Multi-day playback is fetched on demand and bounded: it is a replay of the current graph, not a permanent in-app archive, so off-graph rows and queries beyond the fetch budget do not appear. Aliases are local to this Mac and are never written back to Pi-hole. The build is ad-hoc signed and not notarized. The globe is a summarized accessibility element, while the rails and inspector rows are fully labeled. Field labels stay compact at small window sizes. Destination relaxation is pair-based, so a live All population is layout-bound around 57 fps on a M1 Max MBP.

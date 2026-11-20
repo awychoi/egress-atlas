@@ -50,6 +50,8 @@ struct CommandPalette: View {
             ("filter-all", "Show all outcomes", "remove the outcome filter"),
             ("filter-blocked", "Show blocked only", "blocked destinations and queries"),
             ("pause", runtime.paused ? "Resume live traffic" : "Pause live traffic", "space"),
+            ("replay", "Replay the last six hours", "time travel through the query archive"),
+            ("live", "Back to live traffic", "leave replay and follow Pi-hole"),
             ("settings", "Open settings", "source, display, motion, about"),
             ("reset-camera", "Reset camera", "return to the opening view"),
             ("labels-all", "Show all labels", "keep every orb labelled"),
@@ -265,6 +267,8 @@ struct CommandPalette: View {
             case "filter-all": runtime.setFilter(.all)
             case "filter-blocked": runtime.setFilter(.blocked)
             case "pause": runtime.setPaused(!runtime.paused)
+            case "replay": runtime.enterReplay(hours: 6)
+            case "live": runtime.goLive()
             case "settings": runtime.settingsTab = .source; runtime.settingsOpen = true
             case "reset-camera": runtime.resetCamera()
             case "labels-all": runtime.setLabelMode(.all)
