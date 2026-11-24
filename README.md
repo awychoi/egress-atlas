@@ -53,6 +53,16 @@ Egress Atlas works with [Pi-hole](https://github.com/pi-hole/pi-hole), the open-
 
 The scene model, layout, Metal rendering pipeline, Pi-hole client, packaging and self-signing are documented in [TECHNICAL.md](TECHNICAL.md).
 
+## Development
+
+Enable the repository's Git hooks once per clone:
+
+```sh
+./scripts/install-git-hooks.sh
+```
+
+The pre-commit hook scans staged changes for secrets with [gitleaks](https://github.com/gitleaks/gitleaks) and refuses to commit unscanned if gitleaks is unavailable. Install it with `brew install gitleaks`. Because the hook is wired through `core.hooksPath`, it runs for commits made from Xcode, VS Code, or another Git client too, and it searches Homebrew's install locations itself so those clients do not need your shell's `PATH`. For a verified false positive, `git commit --no-verify` bypasses it.
+
 ## License
 
 Egress Atlas. Copyright © 2026 wychoi.

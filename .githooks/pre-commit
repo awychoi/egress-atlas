@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Block commits that contain secrets. Scans only the staged diff.
+#
+# Versioned in .githooks/ and enabled per clone with:
+#   ./scripts/install-git-hooks.sh
+#
+# Bypass (discouraged, e.g. for a verified false positive):
+#   git commit --no-verify
+
+set -euo pipefail
+
+# Git GUIs and IDEs (Xcode, VS Code, Git clients launched from Finder/Dock)
+# usually inherit launchd's minimal PATH, which does not include Homebrew.
+# Look in the standard install locations before giving up.
+for dir in \
+  /opt/homebrew/bin \
+  /usr/local/bin \
+  /opt/local/bin \
+  /home/linuxbrew/.linuxbrew/bin \
+  "$HOME/.local/bin"; do
+  [[ -d "$dir" ]] && PATH="$dir:$PATH"
+done
+export PATH
+
+find_gitleaks() {
+  local candidate
+  if candidate="$(command -v gitleaks 2>/dev/null)"; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  # Homebrew may be installed away from its default prefix.
+  if [[ -x /opt/homebrew/bin/brew ]]; then
+    candidate="$(/opt/homebrew/bin/brew --prefix gitleaks 2>/dev/null)/bin/gitleaks" || true
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  fi
+  for candidate in \
+    /opt/homebrew/bin/gitleaks \
+    /usr/local/bin/gitleaks \
+    /opt/local/bin/gitleaks \
+    /home/linuxbrew/.linuxbrew/bin/gitleaks \
+    "$HOME/.local/bin/gitleaks"; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! gitleaks_bin="$(find_gitleaks)"; then
+  printf 'pre-commit: gitleaks is not installed; refusing to commit unscanned.\n' >&2
+  printf '  install it with: brew install gitleaks\n' >&2
+  printf '  bypass a verified false positive with: git commit --no-verify\n' >&2
+  exit 1
+fi
+
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+
+args=(protect --staged --redact --no-banner)
+if [[ -f "$root/.gitleaks.toml" ]]; then
+  args+=(--config "$root/.gitleaks.toml")
+fi
+
+exec "$gitleaks_bin" "${args[@]}"
