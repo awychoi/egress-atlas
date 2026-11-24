@@ -1,7 +1,6 @@
 <p align="center">
   <img src="docs/assets/workbench-logo.svg" width="300" alt="Egress Atlas app icon">
 
-![Egress Atlas showing the network index, a live globe of DNS destinations, and recent queries](docs/assets/screenshots/egress-atlas.png)
 
 Egress Atlas is a macOS app that turns your Pi-hole's DNS traffic into a map. Devices on your network sit on the surface of a globe, the domains they look up sit inside it, and every query travels along a wire between them. Allowed lookups glow gold, blocked lookups coral, and new or disappearing destinations play short animations instead of filling another log table. It opens on an offline demo network, so you can try it before connecting anything.
 
