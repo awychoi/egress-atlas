@@ -79,6 +79,40 @@ enum Palette {
     static let orbit = SRGB(hex: "a85a40")
     static let cacao = SRGB(hex: "2d150c")
 
+    // Host-traffic instrument. Cool enough to distinguish from the warm DNS
+    // globe at a glance, but still part of the same space-instrument family.
+    static let host = SRGB(hex: "5fd8e8")
+    static let host2 = SRGB(hex: "2a9fb5")
+    static let hostIce = SRGB(hex: "d6f7ff")
+    static let hostGlow = SRGB(hex: "7fe3ff")
+    static let hostDeep = SRGB(hex: "134f5c")
+    static let hostDim = SRGB(hex: "2f6f7a")
+    static let hostOut = SRGB(hex: "b79bff")
+    static let hostOutHot = SRGB(hex: "d6c5ff")
+
+    // Host body roles. Chrome/shell stays cyan (`host`); apps/services are
+    // teal-green, remotes/domains are cobalt blue. Inbound (`hostGlow`) and
+    // outbound (`hostOut`) remain direction colours, never role colours.
+    static let hostApp = SRGB(hex: "4fe0c8")
+    static let hostAppHot = SRGB(hex: "c9fff4")
+    static let hostAppHover = SRGB(hex: "8cf5e2")
+    static let hostAppDeep = SRGB(hex: "1b6f68")
+    static let hostRemote = SRGB(hex: "6f9bff")
+    static let hostRemoteHot = SRGB(hex: "d6e4ff")
+    static let hostRemoteHover = SRGB(hex: "9bb8ff")
+    static let hostRemoteDeep = SRGB(hex: "2b4f8f")
+    static let hostText = SRGB(hex: "eafbff")
+    static let hostText2 = SRGB(hex: "c2e3ea")
+    static let hostMuted = SRGB(hex: "9bbcc4")
+    static let hostMeta = SRGB(hex: "7c9ca4")
+    static let hostFaint = SRGB(hex: "6b8991")
+    static let hostMint = SRGB(hex: "7ff0d0")
+    static let hostTeal = SRGB(hex: "4fd1c5")
+    static let hostFault = SRGB(hex: "ffb4a8")
+    static let hostBg = SRGB(hex: "050d11")
+    static let hostField = SRGB(hex: "06141a")
+    static let hostPanelTop = SRGB(hex: "0c1b22")
+
     // CSS text tokens
     static let text = SRGB(hex: "f8eedb")
     static let text2 = SRGB(hex: "d5c1a9")
@@ -124,6 +158,45 @@ enum NodeTint {
         flash: SRGB(hex: "ff8a70"),
         orb: SRGB(hex: "ff7d63"),
         dim: 0.85
+    )
+
+    static let host = Tint(
+        ring: SRGB(hex: "45b8e8"),
+        hot: SRGB(hex: "d6f7ff"),
+        hover: SRGB(hex: "a9e8ff"),
+        core: SRGB(hex: "5fd8e8"),
+        spark: SRGB(hex: "e8fbff"),
+        orbit: SRGB(hex: "2a9fb5"),
+        flash: SRGB(hex: "7fe3ff"),
+        orb: SRGB(hex: "5fd8e8"),
+        dim: 0.9
+    )
+
+    /// App/service outer bodies: teal-green, clearly separate from domains.
+    static let hostApp = Tint(
+        ring: Palette.hostApp,
+        hot: Palette.hostAppHot,
+        hover: Palette.hostAppHover,
+        core: Palette.hostAppHover,
+        spark: SRGB(hex: "e8fff9"),
+        orbit: Palette.hostAppDeep,
+        flash: Palette.hostAppHot,
+        orb: Palette.hostApp,
+        dim: 1
+    )
+
+    /// Remote/domain inner bodies: cobalt blue, distinct from app teal and
+    /// from outbound violet.
+    static let hostDomain = Tint(
+        ring: Palette.hostRemote,
+        hot: Palette.hostRemoteHot,
+        hover: Palette.hostRemoteHover,
+        core: Palette.hostRemoteHover,
+        spark: SRGB(hex: "f0f5ff"),
+        orbit: Palette.hostRemoteDeep,
+        flash: Palette.hostRemoteHot,
+        orb: Palette.hostRemote,
+        dim: 1
     )
 }
 

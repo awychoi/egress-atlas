@@ -25,6 +25,7 @@ enum AtlasPreferences {
     private static let deviceAliasesKey = "atlas.deviceAliases"
     private static let destinationAliasesKey = "atlas.destinationAliases"
     private static let showAliasWithAddressKey = "atlas.showAliasWithAddress"
+    private static let activeGlobeKey = "atlas.activeGlobe"
 
     static var labelMode: LabelMode? {
         get {
@@ -100,6 +101,15 @@ enum AtlasPreferences {
     static var showAliasWithAddress: Bool? {
         get { optionalBool(showAliasWithAddressKey) }
         set { setOptionalBool(newValue, forKey: showAliasWithAddressKey) }
+    }
+
+    /// "host" or "dns"; restores the last focused globe on launch.
+    static var activeGlobe: String? {
+        get { defaults.string(forKey: activeGlobeKey) }
+        set {
+            guard persists, let newValue else { return }
+            defaults.set(newValue, forKey: activeGlobeKey)
+        }
     }
 
     static var speed: Float? {

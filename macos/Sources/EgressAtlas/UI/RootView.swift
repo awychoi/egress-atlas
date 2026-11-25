@@ -15,6 +15,9 @@ struct RootView: View {
                 LabelOverlay(store: runtime.labels)
                     .allowsHitTesting(false)
                     .zIndex(2)
+                LabelOverlay(store: runtime.hostLabels)
+                    .allowsHitTesting(false)
+                    .zIndex(2)
                 AtlasChrome(runtime: runtime, metrics: metrics)
                     .zIndex(5)
                 if showBoot {
@@ -66,6 +69,8 @@ struct RootView: View {
                     runtime.filterOpen = false
                 } else if runtime.settingsOpen {
                     runtime.settingsOpen = false
+                } else if runtime.hostSelection != nil {
+                    runtime.clearHostSelection()
                 } else if runtime.selection != nil {
                     runtime.navigateBack()
                 } else {
@@ -75,13 +80,32 @@ struct RootView: View {
                 return nil
             }
             if runtime.commandOpen || typing { return event }
+            if modifiers.contains(.command) {
+                if key == "1" {
+                    runtime.focusGlobe(.dns)
+                    return nil
+                }
+                if key == "2" {
+                    runtime.focusGlobe(.host)
+                    return nil
+                }
+                return event
+            }
             if !modifiers.isEmpty { return event }
 
             switch key {
+            case "g":
+                runtime.toggleGlobe()
+                return nil
             case " ":
-                runtime.setPaused(!runtime.paused)
+                if runtime.displayedGlobe == .host {
+                    runtime.setHostPaused(!runtime.hostPaused)
+                } else {
+                    runtime.setPaused(!runtime.paused)
+                }
                 return nil
             case "f":
+                guard runtime.displayedGlobe == .dns else { return event }
                 let order: [OutcomeFilter] = [.all, .allowed, .blocked]
                 let next = (order.firstIndex(of: runtime.filter) ?? 0) + 1
                 runtime.setFilter(order[next % order.count])

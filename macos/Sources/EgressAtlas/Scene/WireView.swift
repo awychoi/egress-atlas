@@ -7,8 +7,11 @@ import simd
 /// single additive line batch.
 final class WireView {
     var edgeId: String = ""
-    unowned var deviceView: DeviceView!
-    unowned var nodeView: NodeView!
+    // Host graphs churn as apps and domains appear/disappear. The wire owns
+    // its endpoints so a retiring node cannot leave a dangling reference in a
+    // sort or draw pass. There is no cycle: views never point back at wires.
+    var deviceView: DeviceView!
+    var nodeView: NodeView!
     let offset: Float
     var tone: DNSStatus
     var curve: CatmullRom?
@@ -20,6 +23,7 @@ final class WireView {
     var highlight: Float = 0
     var hidden = false
     var signalActive = false
+    var hostTone = false
     /// Fraction of the curve currently drawn. Normal wires are 1; the
     /// reappearance pulse grows a wire from the device to its destination.
     var reveal: Float = 1
@@ -74,22 +78,29 @@ final class WireView {
     func setVisible(_ visible: Bool) { hidden = !visible }
     func setSignalActive(_ active: Bool) { signalActive = active }
 
-    func appendDraw(_ draw: DrawList, elapsed: Float) {
+    func appendDraw(_ draw: DrawList, elapsed: Float, detail: Float = 1) {
         guard !hidden, reveal > 0.001, points.count > 1, curve != nil else { return }
+        let wireAlpha = smoothstep(0.40, 0.78, detail)
+        guard wireAlpha > 0.01 else { return }
         let progress = (elapsed * 0.075 + offset).truncatingRemainder(dividingBy: 1)
         let pulse: Float = signalActive ? 0.015 : 0.32 * dim
-        let opacity = (signalActive ? 0.68 : 0.9) * dim * facing * (1 + highlight * 1.8)
-        let a = Palette.signal.linear
-        let b = (tone == .blocked ? Palette.coral : Palette.gold).linear
-        let white = Vec3(1.0, 0.95, 0.84)
+        let opacity = (signalActive ? 0.78 : 1.0) * dim * facing * (1 + highlight * 1.8)
+            * wireAlpha
+        let a = (hostTone ? Palette.hostApp : Palette.signal).linear
+        let b = hostTone ? Palette.hostRemote.linear
+            : (tone == .blocked ? Palette.coral : Palette.gold).linear
+        let white = hostTone ? Vec3(0.88, 0.99, 1.0) : Vec3(1.0, 0.95, 0.84)
         let segmentCount = max(1, min(points.count - 1,
                                       Int((Float(points.count - 1) * clamp01(reveal)).rounded(.up))))
 
-        for i in 0..<segmentCount {
+        let stride = detail > 0.5 ? 1 : 4
+        var i = 0
+        while i < segmentCount {
             let t0 = Float(i) / 96
             let t1 = Float(i + 1) / 96
             draw.lines.append(LineVertex(points[i], wireColor(t0, a, b, white, progress, pulse, opacity, elapsed)))
             draw.lines.append(LineVertex(points[i + 1], wireColor(t1, a, b, white, progress, pulse, opacity, elapsed)))
+            i += stride
         }
     }
 
@@ -101,7 +112,7 @@ final class WireView {
         d = min(d, 1 - d)
         let head = exp(-d * d * 220) * pulse
         let trail = exp(-d * 8) * pulse * 0.18
-        let base = 0.17 + 0.045 * sin(vT * 34 - elapsed * 1.6)
+        let base = (hostTone ? 0.30 : 0.17) + 0.045 * sin(vT * 34 - elapsed * 1.6)
         let alpha = min(1, (base + head + trail) * opacity)
         var col = a + (b - a) * smoothstep(0.58, 1.0, vT)
         col = col + (white - col) * min(head, 1) * 0.75

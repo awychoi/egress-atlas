@@ -56,7 +56,11 @@ final class NodeView {
     private var lastFlashScale: Float = 0
     private var hoverState = HoverEase()
 
-    private var tint: NodeTint.Tint { status == .blocked ? NodeTint.blocked : NodeTint.allowed }
+    private var tint: NodeTint.Tint {
+        if spec.tone == "hostDomain" { return NodeTint.hostDomain }
+        if spec.tone == "host" { return NodeTint.host }
+        return status == .blocked ? NodeTint.blocked : NodeTint.allowed
+    }
 
     init(spec: NodeSpec, radius: Float, index: Int, rng: RNG) {
         self.spec = spec
@@ -163,7 +167,7 @@ final class NodeView {
 
     /// Append the destination's visual primitives. `camera` gives the billboard
     /// orientation and the camera-facing inner arc's plane.
-    func appendDraw(_ draw: DrawList, elapsed: Float, camera: Camera) {
+    func appendDraw(_ draw: DrawList, elapsed: Float, camera: Camera, detail: Float = 1) {
         guard presence > 0.004 else { return }
         let tint = self.tint
         let dim = dimFactor
@@ -171,20 +175,65 @@ final class NodeView {
         let visualCenter = basePosition + recoilOffset
         let visualScale = self.visualScale
         let scale = presence > 0 ? visualScale : 0.86
+        // Continuous LOD tiers: bokeh fades out as the body, ring, arc and
+        // world orbit fade in. No binary low/high model swap.
+        // Per-node clarity. A small stagger makes neighbouring bodies resolve
+        // at slightly different times; depth defocus keeps interior orbs soft
+        // until they are near the focal plane.
+        let stagger = Float(index % 7) / 7 * 0.10
+        let localDetail = clamp01((detail - stagger) / max(0.001, 1 - stagger))
+        // Divider through the globe centre, perpendicular to the camera.
+        // Only the far side of the divider defocuses; the near half stays
+        // sharp, and the divider stays put while the globe rotates.
+        let focusDepth = camera.viewDepth(of: .zero)
+        let depthDelta = camera.viewDepth(of: visualCenter) - focusDepth
+        let depthDefocus = depthDelta > 0 ? clamp01(depthDelta * 0.16) : 0
+        let blurAlpha = max(1 - smoothstep(0.45, 0.92, localDetail), depthDefocus * 0.85)
+        // Keep a dim but legible structure in the defocused half: the orbit
+        // lights and ring never disappear, they just lose most of their
+        // intensity and spread.
+        let sharpness = detail >= 0.5 ? max(0.12, 1 - depthDefocus * 0.96) : 1
+        let focusLight = detail >= 0.5 ? max(0.18, 1 - depthDefocus * 1.08) : 1
+        // The broad atmospheric glow is the hazy part; let it fall almost
+        // entirely away while the thin ring stays dim but present.
+        let glowLight = detail >= 0.5 ? max(0.025, 1 - depthDefocus * 1.15) : 1
+        let glowScale = 0.25 + 0.75 * glowLight
+        let orbAlpha = smoothstep(0.30, 0.75, localDetail) * sharpness
+        let ringAlpha = smoothstep(0.40, 0.72, localDetail) * focusLight
+        let arcAlpha = smoothstep(0.56, 0.84, localDetail) * focusLight
+        let orbitAlpha = smoothstep(0.64, 0.90, localDetail) * focusLight
 
-        // Instrument ring.
-        var ring = NodeRingUniforms(
-            centerHalf: SIMD4(visualCenter, radius * 2.55 * scale),
-            params: SIMD4(radius, phase, op, hoverState.value),
-            gold: rgba(tint.ring, 1),
-            hot: rgba(tint.hot, 1),
-            signal: rgba(tint.hover, 1)
-        )
-        draw.nodeRings.append(ring)
+        // Defocused tier. Instead of one generic cloud, each real node keeps
+        // its own position and colour as a small cluster of bokeh samples.
+        // The cluster tightens continuously as the node comes into focus.
+        if blurAlpha > 0.01 {
+            let backgroundDim: Float = detail < 0.5 ? 0.18 : 1
+            let exposure: Float = (spec.tone.hasPrefix("host") ? 0.85 : 0.5) * backgroundDim
+            // A single soft disc, not a ring of petals. The disc stays close
+            // to the real body radius so a background node can never look
+            // larger than its foreground version.
+            // A real point only. Any additive glow disc at this depth becomes
+            // a huge bloom ring that reads larger than the foreground orb.
+            draw.points.append(PointVertex(visualCenter,
+                                           rgba(tint.orb, 0.18 * blurAlpha * presence * dim),
+                                           size: 1.2))
+        }
+
+        // Instrument ring (active globe only; the background keeps the orb).
+        if ringAlpha > 0.01 {
+            var ring = NodeRingUniforms(
+                centerHalf: SIMD4(visualCenter, radius * 2.55 * scale),
+                params: SIMD4(radius, phase, op * ringAlpha, hoverState.value),
+                gold: rgba(tint.ring, 1),
+                hot: rgba(tint.hot, 1),
+                signal: rgba(tint.hover, 1)
+            )
+            draw.nodeRings.append(ring)
+        }
 
         // Camera plane basis, matching camera.quaternion.
         let forward = camera.forward
-        let right = forward.cross(.up).normalized
+        let right = forward.cross(camera.up).normalized
         let up = right.cross(forward).normalized
         let back = -forward
         let camRot = Mat4(columns: (
@@ -197,36 +246,48 @@ final class NodeView {
         let plane = Mat4.translation(visualCenter) * camRot
 
         // Inner arc and its bright head.
-        let arcColor = status == .blocked ? SRGB(hex: "ffd2c4") : SRGB(hex: "fff4d9")
-        let innerArcModel = plane
-            * Mat4.eulerXYZ(0, 0, satAngle - 0.45)
-            * Mat4.scale(Vec3(repeating: radius * 1.12 * scale))
-        draw.addMesh(.ringSegmentInner, MeshInstance(
-            model: innerArcModel,
-            color: rgba(arcColor, 0.92 * min(1, presence) * dim)
-        ))
-        let headLocal = plane * SIMD4(cos(satAngle) * radius * 1.23 * scale,
-                                      sin(satAngle) * radius * 1.23 * scale, 0.012, 1)
-        draw.sprites.append(.glow(Vec3(headLocal.x, headLocal.y, headLocal.z),
-                                  size: radius * (hovered || selected ? 2.7 : 2.15) * scale,
-                                  color: status == .blocked ? SRGB(hex: "ff7d63") : SRGB(hex: "fff8e7"),
-                                  opacity: 0.85 * min(1, presence) * dim))
+        if arcAlpha > 0.01 {
+            let arcColor = status == .blocked ? SRGB(hex: "ffd2c4") : SRGB(hex: "fff4d9")
+            let innerArcModel = plane
+                * Mat4.eulerXYZ(0, 0, satAngle - 0.45)
+                * Mat4.scale(Vec3(repeating: radius * 1.12 * scale))
+            draw.addMesh(.ringSegmentInner, MeshInstance(
+                model: innerArcModel,
+                color: rgba(arcColor, 0.92 * arcAlpha * min(1, presence) * dim)
+            ))
+            let headLocal = plane * SIMD4(cos(satAngle) * radius * 1.23 * scale,
+                                          sin(satAngle) * radius * 1.23 * scale, 0.012, 1)
+            draw.sprites.append(.glow(Vec3(headLocal.x, headLocal.y, headLocal.z),
+                                      size: radius * (hovered || selected ? 2.7 : 2.15) * scale,
+                                      color: status == .blocked ? SRGB(hex: "ff7d63") : SRGB(hex: "fff8e7"),
+                                      opacity: 0.85 * arcAlpha * min(1, presence) * dim))
+        }
 
-        // Orb + soft core + hot glint.
-        let orbSize = radius * 0.72 * scale
-        draw.addSphere(center: visualCenter, radius: orbSize,
-                       color: rgba(tint.orb, (0.9 + 0.08 * sin(phase)) * presence * dim))
-        let pulse = 1 + sin(elapsed * 1.8 + phase) * 0.035
-        draw.sprites.append(.glow(visualCenter,
-                                  size: radius * 1.7 * pulse * scale,
-                                  color: tint.core,
-                                  opacity: 0.24 * presence * dim * (status == .blocked ? 0.78 : 1)))
-        draw.sprites.append(.glow(visualCenter,
-                                  size: radius * 0.52 * pulse * scale,
-                                  color: tint.spark,
-                                  opacity: 0.1 * presence * dim * (status == .blocked ? 0.68 : 1)))
+        // Orb + soft core + hot glint. The host instrument is deliberately
+        // quieter: its many small bodies share one cool light, and additive
+        // bloom at full DNS intensity turns the constellation white.
+        let hostTone = spec.tone.hasPrefix("host")
+        if orbAlpha > 0.01 {
+            let orbSize = radius * 0.72 * scale
+            draw.addSphere(center: visualCenter, radius: orbSize,
+                           color: rgba(tint.orb, (0.9 + 0.08 * sin(phase)) * presence * dim
+                                       * (hostTone ? 0.72 : 1) * orbAlpha))
+            let pulse = 1 + sin(elapsed * 1.8 + phase) * 0.035
+            draw.sprites.append(.glow(visualCenter,
+                                      size: radius * 1.7 * pulse * scale * glowScale,
+                                      color: tint.core,
+                                      opacity: 0.24 * orbAlpha * glowLight * presence * dim
+                                        * (hostTone ? 0.55 : 1)
+                                        * (status == .blocked ? 0.78 : 1)))
+            draw.sprites.append(.glow(visualCenter,
+                                      size: radius * 0.52 * pulse * scale * glowScale,
+                                      color: tint.spark,
+                                      opacity: 0.1 * orbAlpha * glowLight * presence * dim
+                                        * (status == .blocked ? 0.68 : 1)))
+        }
 
         // World-space outer orbit + its light band and glow.
+        if orbitAlpha > 0.01 {
         let holder = Mat4.translation(visualCenter) * Mat4.eulerXYZ(orbitTilt, orbitYaw, orbitRoll)
         var previous: Vec3?
         for i in 0...96 {
@@ -235,7 +296,7 @@ final class NodeView {
             let point = Vec3(p.x, p.y, p.z)
             if let previous {
                 draw.addLine(previous, point,
-                             rgba(tint.orbit, 0.24 * min(1, presence) * tint.dim * dim))
+                             rgba(tint.orbit, 0.24 * orbitAlpha * min(1, presence) * tint.dim * dim))
             }
             previous = point
         }
@@ -245,22 +306,23 @@ final class NodeView {
             * Mat4.scale(Vec3(repeating: radius * 1.86))
         draw.addMesh(.ringSegmentOuter, MeshInstance(
             model: arcModel,
-            color: rgba(arcTint, (hovered || selected ? 1 : 0.72) * min(1, presence) * (dimmed ? 0.3 : 1))
+            color: rgba(arcTint, orbitAlpha * (hovered || selected ? 1 : 0.72) * min(1, presence) * (dimmed ? 0.3 : 1))
         ))
         let glowLocal = holder * SIMD4(cos(0.9) * radius * 1.98, 0,
                                        -sin(0.9) * radius * 1.98, 1)
         draw.sprites.append(.glow(Vec3(glowLocal.x, glowLocal.y, glowLocal.z),
                                   size: radius * 1.95,
                                   color: status == .blocked ? tint.hot : Palette.signalIce,
-                                  opacity: (hovered || selected ? 0.95 : 0.58) * min(1, presence) * (dimmed ? 0.3 : 1)))
+                                  opacity: orbitAlpha * (hovered || selected ? 0.95 : 0.58) * min(1, presence) * (dimmed ? 0.3 : 1)))
+        }
 
         // Hit flash.
-        if flashAge < 1 {
+        if orbAlpha > 0.05, flashAge < 1 {
             let t = min(1, flashAge / 0.34)
             draw.sprites.append(.glow(visualCenter,
                                       size: radius * (2.7 + t * 4.2),
                                       color: tint.flash,
-                                      opacity: pow(1 - t, 2.2) * 0.85 * min(1, presence)))
+                                      opacity: pow(1 - t, 2.2) * 0.85 * orbAlpha * min(1, presence)))
         }
     }
 }

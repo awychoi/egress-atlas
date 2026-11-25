@@ -25,6 +25,17 @@ struct PiHoleSnapshot {
     var earliestTimestampDisk: Double? = nil
 }
 
+struct PiHoleLogLine {
+    let timestamp: Double      // seconds since epoch
+    let message: String
+}
+
+struct PiHoleLogPage {
+    let lines: [PiHoleLogLine]
+    let nextID: Int
+    let pid: Int?
+}
+
 enum PiHoleError: LocalizedError {
     case invalidURL(String)
     case http(String)
@@ -298,6 +309,47 @@ final class PiHoleClient {
             earliestTimestamp: earliest.map { $0 * 1000 },
             earliestTimestampDisk: earliestDisk.map { $0 * 1000 }
         )
+    }
+
+    /// Pi-hole v6 exposes dnsmasq's own log with real answer IPs and a cursor.
+    /// This is the only zero-privilege source of exact IP→domain evidence; the
+    /// structured `/api/queries` endpoint has no answer address.
+    func dnsmasqLog(nextID: Int? = nil) async throws -> PiHoleLogPage {
+        if !password.isEmpty && sid == nil {
+            try await authenticate(force: false)
+        }
+        var components = URLComponents(url: baseURL.appendingPathComponent("api/logs/dnsmasq"),
+                                       resolvingAgainstBaseURL: false)
+        if let nextID, nextID > 0 {
+            components?.queryItems = [URLQueryItem(name: "nextID", value: String(nextID))]
+        }
+        guard let url = components?.url else {
+            throw PiHoleError.invalidURL("The Pi-hole URL is not valid.")
+        }
+        var request = URLRequest(url: url)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let sid { request.setValue(sid, forHTTPHeaderField: "X-FTL-SID") }
+        var (data, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse, http.statusCode == 401, !password.isEmpty {
+            try await authenticate(force: true)
+            request.setValue(sid, forHTTPHeaderField: "X-FTL-SID")
+            (data, response) = try await session.data(for: request)
+        }
+        try validate(response, data: data)
+        let object = try jsonObject(data)
+        let rawLines = object["log"] as? [[String: Any]] ?? []
+        var lines: [PiHoleLogLine] = []
+        lines.reserveCapacity(rawLines.count)
+        for raw in rawLines {
+            let stamp = (raw["timestamp"] as? NSNumber)?.doubleValue ?? 0
+            let message = String(raw["message"] as? String ?? "")
+            guard stamp > 0, !message.isEmpty else { continue }
+            lines.append(PiHoleLogLine(timestamp: stamp, message: message))
+        }
+        let next = (object["nextID"] as? NSNumber)?.intValue
+            ?? Int((object["nextID"] as? String) ?? "") ?? 0
+        let pid = (object["pid"] as? NSNumber)?.intValue
+        return PiHoleLogPage(lines: lines, nextID: next, pid: pid)
     }
 
     // MARK: - Parsing

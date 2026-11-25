@@ -137,6 +137,7 @@ struct AtlasLabel: Identifiable, Equatable {
     let blur: CGFloat
     let size: CGSize
     let accessibilityLabel: String
+    var isHost: Bool = false
 }
 
 final class LabelStore: ObservableObject {
@@ -234,6 +235,22 @@ private struct DeviceAppearanceLink {
     var t: Float = 0
     let duration: Float
     let onArrive: () -> Void
+}
+
+// ── Globe deck ───────────────────────────────────────────────────────────
+
+enum GlobeKind: String, CaseIterable, Identifiable {
+    case dns
+    case host
+    var id: String { rawValue }
+    var title: String { self == .dns ? "DNS" : "HOST" }
+    var subtitle: String { self == .dns ? "Pi-hole network" : "This Mac" }
+}
+
+enum GlobePick {
+    case dns(Selection)
+    case host(HostSelection)
+    case focusGlobe(GlobeKind)
 }
 
 // ── Runtime ──────────────────────────────────────────────────────────────
@@ -441,7 +458,51 @@ final class AtlasRuntime: NSObject, ObservableObject {
     @Published var savedSourceInsecure = PiHoleCredentials.savedInsecure
 
     var labels = LabelStore()
+    var hostLabels = LabelStore()
     private var labelSizeCache: [String: CGSize] = [:]
+
+    // Host globe / deck state.
+    @Published private(set) var activeGlobe: GlobeKind = .dns
+    /// The instrument the chrome currently shows. It changes once, at the
+    /// midpoint of a focus transition, so text and data never mix.
+    @Published private(set) var displayedGlobe: GlobeKind = .dns
+    @Published private(set) var backgroundHover: GlobeKind?
+    @Published private(set) var hostSnapshot: HostSnapshot = .empty
+    @Published var hostSelection: HostSelection?
+    @Published var hostHover: HostSelection?
+    @Published private(set) var hostAvailable = true
+    @Published private(set) var hostNote: String?
+    @Published private(set) var hostDomainStatus: String?
+    @Published private(set) var globeTransitioning = false
+    @Published private(set) var globeTransitionProgress: Float = 0
+    @Published private(set) var hostPaused = false
+    let hostScene = HostGlobeScene()
+    private var hostMonitor: HostTrafficMonitor?
+    private var hostDomains: HostDomainAttributor?
+    private var domainStream: PiHoleDnsmasqStream?
+    private var localAddresses = HostLocalAddresses.current()
+    /// Headless tools opt back into the offline demo graph; the shipping app
+    /// shows an empty DNS globe until a live Pi-hole is connected.
+    private let allowsDemoGeometry = !AtlasPreferences.persists
+    private var demoPreview = false
+    private var dnsHasVisualData: Bool { isLiveSource || allowsDemoGeometry || demoPreview }
+    private var rearPhase: Float = 1.2
+    private var deckFrom: GlobeKind = .dns
+    private var deckTo: GlobeKind = .dns
+    private var deckStartRear = Vec3.zero
+    private var deckProgress: Float = 0
+    private var deckDuration: Float = 1.45
+    private var deckActive = false
+    private var rearWorldOffset = Vec3.zero
+    private var rearOrbitAxis = Vec3(0.55, 1, 0.28).normalized
+    private var deckWorldBackground = Vec3.zero
+    private var deckCameraFrom = Camera()
+    private var deckOrbitCenter = Vec3.zero
+    private var deckOrbitStart = Vec3.zero
+    private var deckOrbitRadiusEnd: Float = 35
+    private var deckOrbitAxis = Vec3(0, 1, 0)
+    private let deckOrbitAngle: Float = .pi
+    private var deckTargetFrom = Vec3.zero
 
     /// Keep a restored study speed on one of the five segment stops even if the
     /// defaults were written by an older build or hand-edited.
@@ -483,6 +544,12 @@ final class AtlasRuntime: NSObject, ObservableObject {
         cam.target = Vec3(0, 0.15, 0)
         camera = cam
         fitDistance = fit
+        let initialForward = camera.forward
+        let initialRight = initialForward.cross(.up).normalized
+        let initialUp = initialRight.cross(initialForward).normalized
+        let initialRearDirection = (initialForward * 0.82
+            + initialRight * 0.24 + initialUp * 0.12).normalized
+        rearWorldOffset = initialRearDirection * max(110, fit * 3.0)
         super.init()
         buildScene()
         applyWindow(animate: false, initial: true)
@@ -498,6 +565,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     deinit {
         source.stop()
+        hostMonitor?.stop()
         sourceTimer?.invalidate()
         uiTimer?.invalidate()
         pulseTimer?.invalidate()
@@ -516,6 +584,13 @@ final class AtlasRuntime: NSObject, ObservableObject {
         source.localListeners.append { [weak self] event in
             self?.handleLocal(event)
         }
+        source.queryListeners.append { [weak self] event in
+            guard let self, self.source.kind == "pihole" else { return }
+            guard self.localAddresses.contains(event.device.ip) else { return }
+            self.hostDomains?.record(domain: event.destination.domain,
+                                     at: Date(timeIntervalSince1970: event.ts / 1000))
+        }
+        seedHostDomains()
         if let live = source as? PiHoleSource {
             live.statusListener = { [weak self] error in
                 self?.sourceError = error
@@ -640,6 +715,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
                     self.activeSourcePassword = effective.isEmpty ? nil : effective
                     self.liveSnapshot = snapshot
                     self.liveClient = client
+                    self.startDomainStream(client: client)
                     if rememberChoice {
                         PiHoleCredentials.lastSourceWasLive = true
                         PiHoleCredentials.livePopulation = population
@@ -669,9 +745,11 @@ final class AtlasRuntime: NSObject, ObservableObject {
         }
     }
 
-    func useDemoSource(rememberChoice: Bool = true) {
+    func useDemoSource(rememberChoice: Bool = true, preview: Bool = true) {
+        if preview { demoPreview = true }
         sourceRequestToken += 1
         source.stop()
+        stopDomainStream()
         liveSnapshot = nil
         liveClient = nil
         activeSourcePassword = nil
@@ -734,7 +812,8 @@ final class AtlasRuntime: NSObject, ObservableObject {
         hasSavedPassword = false
         savedSourceURL = ""
         savedSourceInsecure = false
-        useDemoSource()
+        demoPreview = false
+        useDemoSource(preview: false)
     }
 
     func refreshLiveSource(rememberChoice: Bool = true) {
@@ -842,6 +921,20 @@ final class AtlasRuntime: NSObject, ObservableObject {
         readyFlag = true
     }
 
+    private func restoreLastGlobe() {
+        guard AtlasPreferences.activeGlobe == "host", activeGlobe == .dns else { return }
+        activeGlobe = .host
+        displayedGlobe = .host
+        deckActive = false
+        globeTransitioning = false
+        globeTransitionProgress = 0
+        labels.labels = []
+        hostLabels.labels = []
+        selection = nil
+        hostSelection = nil
+        refreshUI()
+    }
+
     func start() {
         guard !started else { return }
         started = true
@@ -854,7 +947,416 @@ final class AtlasRuntime: NSObject, ObservableObject {
         pulseTimer = Timer.scheduledTimer(timeInterval: 0.25, target: self,
                                           selector: #selector(pulseTick), userInfo: nil, repeats: true)
         source.start()
+        startHostMonitor()
+        restoreLastGlobe()
+        #if DEBUG
+        if UserDefaults.standard.bool(forKey: "atlas.startHost") {
+            debugShowHostGlobe()
+        }
+        if UserDefaults.standard.bool(forKey: "atlas.autoFocusHost") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                self?.focusGlobe(.host)
+            }
+        }
+        #endif
         refreshUI()
+    }
+
+    // ── host globe / deck ────────────────────────────────────────────────
+
+    private func startHostMonitor() {
+        guard hostMonitor == nil else { return }
+        localAddresses = HostLocalAddresses.current()
+        let domains = HostDomainAttributor()
+        let monitor = HostTrafficMonitor()
+        monitor.domainLookup = { [weak domains] host, port, date in
+            guard let domains else { return nil }
+            if let match = domains.match(host: host, port: port, at: date) {
+                return match
+            }
+            domains.requestPTR(host: host)
+            return nil
+        }
+        monitor.onSnapshot = { [weak self] snapshot in
+            guard let self else { return }
+            self.hostSnapshot = snapshot
+            self.hostAvailable = snapshot.available
+            self.hostNote = snapshot.note
+            self.hostScene.apply(snapshot)
+            self.inspectorRevision += 1
+            #if DEBUG
+            if UserDefaults.standard.bool(forKey: "atlas.hostDebug") {
+                let lines = snapshot.apps.prefix(8).map {
+                    "\($0.name) in=\($0.rxPerSecond) out=\($0.txPerSecond) sockets=\($0.socketCount)"
+                }
+                let header = "available=\(snapshot.available) apps=\(snapshot.apps.count) domains=\(snapshot.domains.count) note=\(snapshot.note ?? "-")\n"
+                try? (header + lines.joined(separator: "\n") + "\n")
+                    .write(toFile: "/tmp/atlas-host-live.txt", atomically: true, encoding: .utf8)
+            }
+            #endif
+        }
+        hostDomains = domains
+        hostMonitor = monitor
+        monitor.start()
+        seedHostDomains()
+    }
+
+    private func startDomainStream(client: PiHoleClient) {
+        stopDomainStream()
+        if hostDomains == nil {
+            hostDomains = HostDomainAttributor()
+            hostMonitor?.domainLookup = { [weak domains = hostDomains] host, port, date in
+                guard let domains else { return nil }
+                if let match = domains.match(host: host, port: port, at: date) {
+                    return match
+                }
+                domains.requestPTR(host: host)
+                return nil
+            }
+        }
+        let clients = HostLocalAddresses.current()
+        localAddresses = clients
+        let stream = PiHoleDnsmasqStream(localClients: clients) {
+            try await client.dnsmasqLog(nextID: $0)
+        }
+        stream.onObservations = { [weak self] observations in
+            guard let self else { return }
+            for observation in observations {
+                self.hostDomains?.recordAnswer(domain: observation.domain,
+                                               ip: observation.ip,
+                                               at: observation.at,
+                                               chain: observation.chain)
+            }
+        }
+        stream.onStatus = { [weak self] error in
+            self?.hostDomainStatus = error
+        }
+        domainStream = stream
+        stream.start()
+        AtlasDiagnostics.log("host domain stream started clients=\(clients.count)")
+    }
+
+    private func stopDomainStream() {
+        domainStream?.stop()
+        domainStream = nil
+        hostDomainStatus = nil
+    }
+
+    private func seedHostDomains() {
+        guard source.kind == "pihole", let hostDomains else { return }
+        localAddresses = HostLocalAddresses.current()
+        let cutoff = Date().addingTimeInterval(-300)
+        for device in network.devices where localAddresses.contains(device.ip) {
+            for edge in device.edges {
+                let date = Date(timeIntervalSince1970: edge.lastSeen / 1000)
+                guard date > cutoff else { continue }
+                hostDomains.record(domain: edge.destination.domain, at: date)
+            }
+        }
+    }
+
+    var hostScopes: Set<HostScope> {
+        hostMonitor?.enabledScopes ?? [.internet, .lan, .vpn]
+    }
+
+    func setHostScope(_ scope: HostScope, enabled: Bool) {
+        guard let monitor = hostMonitor else { return }
+        var scopes = monitor.enabledScopes
+        if enabled { scopes.insert(scope) } else { scopes.remove(scope) }
+        if scopes.isEmpty { scopes.insert(.internet) }
+        monitor.enabledScopes = scopes
+        if scope == .loopback || !enabled { hostScene.reset() }
+    }
+
+    func setHostScopes(_ scopes: Set<HostScope>) {
+        guard let monitor = hostMonitor else { return }
+        monitor.enabledScopes = scopes.isEmpty ? [.internet] : scopes
+        hostScene.reset()
+    }
+
+    func setHostPaused(_ paused: Bool) {
+        hostPaused = paused
+        hostMonitor?.setPaused(paused)
+    }
+
+    func selectHost(_ next: HostSelection?) {
+        hostSelection = next
+        hostScene.selection = next
+        if next != nil {
+            selection = nil
+            // Match the DNS globe: selecting a body opens its inspector rail.
+            rightRailOpen = true
+        }
+        inspectorRevision += 1
+    }
+
+    func clearHostSelection() {
+        hostSelection = nil
+        hostScene.selection = nil
+        inspectorRevision += 1
+    }
+
+    func setHostHover(_ next: HostSelection?) {
+        guard hostHover != next else { return }
+        hostHover = next
+        hostScene.hover = next
+    }
+
+    // ── unified globe picking ────────────────────────────────────────────
+
+    /// One hit-test for both instruments and the background silhouette. The
+    /// active globe's bodies always win over the background disc.
+    func globePick(at point: CGPoint, viewSize: CGSize) -> GlobePick? {
+        guard !deckActive else { return nil }
+        switch activeGlobe {
+        case .dns:
+            if dnsHasVisualData, let pick = pick(at: point, viewSize: viewSize) {
+                return .dns(pick)
+            }
+            if hitsInactiveGlobe(point: point, viewSize: viewSize) {
+                return .focusGlobe(.host)
+            }
+        case .host:
+            if let pick = hostScene.pick(at: point, viewSize: viewSize, camera: camera) {
+                return .host(pick)
+            }
+            if dnsHasVisualData, hitsInactiveGlobe(point: point, viewSize: viewSize) {
+                return .focusGlobe(.dns)
+            }
+        }
+        return nil
+    }
+
+    func setGlobeHover(_ pick: GlobePick?) {
+        switch pick {
+        case .dns(let selection):
+            setHostHover(nil)
+            backgroundHover = nil
+            setHovered(selection)
+        case .host(let selection):
+            setHovered(nil)
+            backgroundHover = nil
+            setHostHover(selection)
+        case .focusGlobe(let kind):
+            setHovered(nil)
+            setHostHover(nil)
+            backgroundHover = kind
+        case nil:
+            setHovered(nil)
+            setHostHover(nil)
+            backgroundHover = nil
+        }
+    }
+
+    /// Screen anchor for the background-globe hover chip.
+    func inactiveGlobeHint(viewSize: CGSize) -> (kind: GlobeKind, point: CGPoint, radius: CGFloat)? {
+        guard !deckActive, let kind = backgroundHover,
+              viewSize.width > 10, viewSize.height > 10 else { return nil }
+        let viewport = SIMD2<Float>(Float(viewSize.width), Float(viewSize.height))
+        let offset = rearOffset(camera: camera)
+        let center = camera.project(offset, viewport: viewport)
+        let depth = camera.position.distance(to: offset)
+        let radius = CGFloat(globeRadius * Float(viewSize.height)
+            / (2 * tan(camera.fov * .pi / 360)) / max(0.001, depth))
+        return (kind, CGPoint(x: CGFloat(center.x), y: CGFloat(center.y)), radius)
+    }
+
+    private func hitsInactiveGlobe(point: CGPoint, viewSize: CGSize) -> Bool {
+        let viewport = SIMD2<Float>(Float(viewSize.width), Float(viewSize.height))
+        let activeCenter = camera.project(.zero, viewport: viewport)
+        let activeRadius = globeRadius * Float(viewSize.height)
+            / (2 * tan(camera.fov * .pi / 360)) / max(0.001, camera.position.length)
+        let dActive = hypot(activeCenter.x - Float(point.x), activeCenter.y - Float(point.y))
+        if dActive < activeRadius * 0.96 { return false }
+
+        let offset = rearOffset(camera: camera)
+        let center = camera.project(offset, viewport: viewport)
+        let depth = camera.position.distance(to: offset)
+        let radius = globeRadius * Float(viewSize.height)
+            / (2 * tan(camera.fov * .pi / 360)) / max(0.001, depth)
+        let d = hypot(center.x - Float(point.x), center.y - Float(point.y))
+        return d < radius * 0.94
+    }
+
+    func focusHostSelection() {
+        guard let hostSelection, let point = hostScene.focusPoint(for: hostSelection) else { return }
+        autoResumeAt = CACurrentMediaTime() + 6
+        lastInteraction = CACurrentMediaTime()
+        flyTo(position: point.position, target: point.target, duration: 1.05, arc: true)
+    }
+
+    func focusGlobe(_ kind: GlobeKind) {
+        guard !deckActive, kind != activeGlobe else { return }
+        beginDeck(to: kind)
+        showToast(kind == .host ? "Host traffic · this Mac" : "DNS · Pi-hole network",
+                  tone: kind == .host ? .signal : .gold)
+    }
+
+    private func beginDeck(to kind: GlobeKind) {
+        deckFrom = activeGlobe
+        deckTo = kind
+        let background = rearOffset(camera: camera)
+        deckStartRear = background
+        deckWorldBackground = background
+        deckTargetFrom = orbitTarget
+        deckCameraFrom = camera
+        // Go around the background globe to its far side. The old foreground
+        // globe never moves; during the orbit it becomes the thing seen in the
+        // background, rather than disappearing behind the camera.
+        // Orbit the camera 180° around the clicked (background) globe. The
+        // end point is its exact opposite side, so the requested globe is in
+        // front and the old foreground is left behind it.
+        deckOrbitCenter = background
+        deckOrbitStart = camera.position - background
+        deckOrbitRadiusEnd = max(24, camera.position.distance(to: orbitTarget))
+        deckOrbitAxis = .up
+        deckProgress = 0
+        deckDuration = reducedMotion ? 0.35 : 1.6
+        deckActive = true
+        globeTransitioning = true
+        globeTransitionProgress = 0
+        autoResumeAt = CACurrentMediaTime() + 4
+        lastInteraction = CACurrentMediaTime()
+        labels.labels = []
+        hostLabels.labels = []
+    }
+
+    func toggleGlobe() {
+        focusGlobe(activeGlobe == .dns ? .host : .dns)
+    }
+
+    private var rearOrbitRadius: Float {
+        // Keep the orbit outside the camera's maximum zoom-out radius. When
+        // the far side of that circle is on the camera side, the globe is
+        // behind the camera, not in front of the foreground.
+        max(110, currentFitDistance() * 3.0)
+    }
+
+    private func rearOffset(camera: Camera) -> Vec3 {
+        // A real world-space orbit around the active globe. No depth clamp:
+        // clamping produced the old back-and-forth motion instead of a full
+        // orbit that passes behind the camera.
+        rearWorldOffset
+    }
+
+    private func orbitRear(_ dt: Float) {
+        let angle = dt * 0.018
+        guard angle != 0, rearWorldOffset.lengthSq > 0.0001 else { return }
+        let rotated = Quat(angle: angle, axis: rearOrbitAxis)
+        let matrix = Mat4.rotation(quaternion: rotated)
+        let p = matrix * SIMD4(rearWorldOffset.normalized, 1)
+        rearWorldOffset = Vec3(p.x, p.y, p.z) * rearOrbitRadius
+    }
+
+    private func advanceDeck(dt: Float) {
+        if !deckActive {
+            orbitRear(dt)
+            return
+        }
+        deckProgress += dt / max(0.3, deckDuration)
+        globeTransitionProgress = clamp01(deckProgress)
+        if deckProgress >= 0.5, displayedGlobe != deckTo {
+            displayedGlobe = deckTo
+            labels.labels = []
+            hostLabels.labels = []
+        }
+        if deckProgress >= 1 {
+            completeDeck()
+        }
+    }
+
+    private func completeDeck() {
+        // Rebase the world around the globe that the camera just reached. Both
+        // layers and the camera move by the same vector, so the final frame is
+        // visually continuous; from here the new active globe is at the origin.
+        let background = deckWorldBackground
+        let direction: Vec3
+        if deckOrbitStart.lengthSq > 0.0001 {
+            direction = deckOrbitStart.normalized
+        } else {
+            direction = Vec3(0, 0, 1)
+        }
+        let rotated = Mat4.rotation(quaternion: Quat(angle: deckOrbitAngle, axis: deckOrbitAxis))
+            * SIMD4(direction, 1)
+        let endPosition = deckOrbitCenter + Vec3(rotated.x, rotated.y, rotated.z) * deckOrbitRadiusEnd
+        camera.position = endPosition - background
+        camera.target = .zero
+        camera.pan = .zero
+        orbitTarget = .zero
+        rearWorldOffset = -background
+        activeGlobe = deckTo
+        displayedGlobe = deckTo
+        AtlasPreferences.activeGlobe = deckTo == .host ? "host" : "dns"
+        deckActive = false
+        globeTransitioning = false
+        globeTransitionProgress = 0
+        labels.labels = []
+        hostLabels.labels = []
+        selection = nil
+        hostSelection = nil
+        hover = nil
+        hostHover = nil
+        refreshUI()
+    }
+
+    /// Headless review hook: populate the host globe with the deterministic demo
+    /// snapshot and make it active without a live monitor.
+    func debugShowHostGlobe() {
+        let snapshot = HostDemo.snapshot()
+        hostSnapshot = snapshot
+        hostScene.apply(snapshot)
+        hostScene.primeForSnapshot()
+        activeGlobe = .host
+        displayedGlobe = .host
+        deckActive = false
+        globeTransitioning = false
+        globeTransitionProgress = 0
+        selection = nil
+        hostSelection = nil
+        labels.labels = []
+        refreshUI()
+    }
+
+    /// Headless review hook: freeze the DNS→host focus transition at `progress`.
+    func debugShowDeck(progress: Float) {
+        let snapshot = HostDemo.snapshot()
+        hostSnapshot = snapshot
+        hostScene.apply(snapshot)
+        hostScene.primeForSnapshot()
+        beginDeck(to: .host)
+        deckProgress = clamp01(progress)
+        globeTransitionProgress = deckProgress
+        displayedGlobe = deckProgress >= 0.5 ? .host : .dns
+        refreshUI()
+    }
+
+    private func updateHostScene(dt: Float, viewSize: CGSize) {
+        let p = clamp01(deckProgress)
+        let hostDetail: Float
+        let hostIsLive: Bool
+        if deckActive {
+            if deckTo == .host {
+                hostDetail = min(1, max(0.32, (p - 0.35) / 0.3))
+                hostIsLive = p > 0.45
+            } else {
+                hostDetail = p < 0.45 ? 1 : max(0, 1 - (p - 0.45) / 0.3)
+                hostIsLive = p < 0.6
+            }
+        } else {
+            hostDetail = activeGlobe == .host ? 1 : 0.32
+            hostIsLive = activeGlobe == .host
+        }
+        hostScene.setCamera(camera)
+        hostScene.setDetail(hostDetail, active: hostIsLive)
+        hostScene.update(dt: dt, camera: camera)
+        if activeGlobe == .host && !deckActive && viewSize.width > 10 {
+            hostScene.resolveLabels(camera: camera, viewSize: viewSize)
+            if hostLabels.labels != hostScene.labels {
+                hostLabels.labels = hostScene.labels
+            }
+        } else if !hostLabels.labels.isEmpty {
+            hostLabels.labels = []
+        }
     }
 
     @objc private func sourceTick() {
@@ -1202,20 +1704,27 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
         camera.aspect = Float(frameViewSize.width / max(1, frameViewSize.height))
         trauma = max(0, trauma - dt * 1.8)
+        advanceDeck(dt: paused ? 0 : dt)
         updateCamera(dt)
-        updateLayout(realDt: dt)
-        updateDevices(dt)
-        updateNodes(dt)
-        updateWires(dt)
-        advanceReplay(dt: dt)
-        updateHalo(dt)
-        updateLocalTraces(dt)
-        for i in signals.indices.reversed() {
-            if !signals[i].update(dt: simDt) {
-                signals.remove(at: i)
+        // The inactive DNS instrument is frozen: its layout, effects and
+        // labels are expensive and invisible at background LOD. It resumes
+        // exactly where it left off when it becomes active again.
+        let dnsLive = activeGlobe == .dns && !deckActive
+        if dnsLive {
+            updateLayout(realDt: dt)
+            updateDevices(dt)
+            updateNodes(dt)
+            updateWires(dt)
+            advanceReplay(dt: dt)
+            updateHalo(dt)
+            updateLocalTraces(dt)
+            for i in signals.indices.reversed() {
+                if !signals[i].update(dt: simDt) {
+                    signals.remove(at: i)
+                }
             }
+            updateDeviceAppearances(simDt)
         }
-        updateDeviceAppearances(simDt)
 
         statsClock += dt
         if statsClock >= 1 {
@@ -1234,17 +1743,22 @@ final class AtlasRuntime: NSObject, ObservableObject {
         // selected tag), so dense sets resolve at 24 Hz and very large graphs
         // at 12 Hz; the overlay interpolates the anchor between those updates
         // on the render server.
-        let denseLabels = labels.labels.count > 2
-        let hugeGraph = nodes.count > 200
-        let labelInterval: Float = denseLabels ? (hugeGraph ? 1.0 / 12.0 : 1.0 / 24.0) : 0
-        labels.cadence = TimeInterval(labelInterval)
-        labels.animates = !hugeGraph
-        labelResolveClock += dt
-        if labelInterval <= 0 || labelResolveClock >= labelInterval {
-            labelResolveClock = 0
-            updateLabels(force: false)
+        updateHostScene(dt: dt, viewSize: frameViewSize)
+        if activeGlobe == .dns && !deckActive {
+            let denseLabels = labels.labels.count > 2
+            let hugeGraph = nodes.count > 200
+            let labelInterval: Float = denseLabels ? (hugeGraph ? 1.0 / 12.0 : 1.0 / 24.0) : 0
+            labels.cadence = TimeInterval(labelInterval)
+            labels.animates = !hugeGraph
+            labelResolveClock += dt
+            if labelInterval <= 0 || labelResolveClock >= labelInterval {
+                labelResolveClock = 0
+                updateLabels(force: false)
+            }
+            expireEventLabels()
+        } else if !labels.labels.isEmpty {
+            labels.labels = []
         }
-        expireEventLabels()
         updateTimers(simDt)
         updateAutoTour(dt)
 
@@ -1261,6 +1775,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
     }
 
     private func updateCamera(_ dt: Float) {
+        if deckActive { return }
         if flightDelayRemaining > 0 {
             flightDelayRemaining -= dt
             if flightDelayRemaining <= 0, let pending = pendingFlight {
@@ -1311,26 +1826,37 @@ final class AtlasRuntime: NSObject, ObservableObject {
         }
 
         var offset = camera.position - orbitTarget
-        var radius = max(0.0001, offset.length)
-        var theta = atan2(offset.x, offset.z)
-        var phi = acos(clamp(offset.y / radius, -1, 1))
+        let radius = clamp(offset.length * orbitScale, minOrbitRadius, maxOrbitRadius)
 
         // OrbitControls with damping applies only dampingFactor of the pending
         // delta each update, then decays that delta. Auto-rotate therefore
         // lands at its documented one-revolution-per-~103s instead of being
         // amplified by the damping tail.
         let damping: Float = 0.065
-        theta += sphericalDelta.x * damping
-        phi += sphericalDelta.y * damping
-        phi = clamp(phi, .pi * 0.07, .pi * 0.93)
-        radius = clamp(radius * orbitScale, minOrbitRadius, maxOrbitRadius)
+        let yaw = sphericalDelta.x * damping
+        let pitch = sphericalDelta.y * damping
+        var up = camera.up.normalized
+        let direction = offset.normalized
+
+        // Arcball-style orbit: yaw around the camera up, then pitch around the
+        // current screen-right axis. The up vector rolls with the camera, so a
+        // full vertical revolution crosses the poles without a look-at flip.
+        let yawQ = Quat(angle: yaw, axis: up.lengthSq > 0.001 ? up : .up)
+        offset = simd_act(yawQ, offset)
+        up = simd_act(yawQ, up)
+        var right = offset.normalized.cross(up)
+        if right.lengthSq < 0.000001 { right = camera.forward.cross(.up) }
+        right = right.normalized
+        let pitchQ = Quat(angle: -pitch, axis: right)
+        offset = simd_act(pitchQ, offset)
+        up = simd_act(pitchQ, up)
+        let dir = offset.normalized
+        camera.position = orbitTarget + dir * radius
+        camera.target = orbitTarget
+        camera.up = up.normalized
         orbitScale = 1
         sphericalDelta *= (1 - damping)
-
-        let sinPhi = sin(phi)
-        offset = Vec3(sinPhi * sin(theta), cos(phi), sinPhi * cos(theta)) * radius
-        camera.position = orbitTarget + offset
-        camera.target = orbitTarget
+        _ = direction
     }
 
     private func updateDevices(_ dt: Float) {
@@ -1602,27 +2128,64 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     private func buildDrawList(simDt: Float) {
         dot.reset()
-        stage.update(dt: simDt, elapsed: elapsed, stageScale: stageScale, into: dot)
+        if !dnsHasVisualData {
+            let detail: Float = activeGlobe == .dns && !deckActive ? 1 : 0.32
+            let startLine = dot.stageLines.count
+            let startPoint = dot.stagePoints.count
+            stage.update(dt: simDt, elapsed: elapsed, stageScale: stageScale,
+                         detail: max(0.51, detail), into: dot)
+            let alpha = 0.03 + 0.97 * smoothstep(0.28, 0.82, detail)
+            for i in startLine..<dot.stageLines.count { dot.stageLines[i].color.w *= alpha }
+            for i in startPoint..<dot.stagePoints.count { dot.stagePoints[i].color.w *= alpha }
+            labels.labels = []
+            return
+        }
+        let dnsDetail: Float
+        if !deckActive {
+            dnsDetail = activeGlobe == .dns ? 1 : 0.32
+        } else if deckTo == .dns {
+            dnsDetail = min(1, max(0.32, (deckProgress - 0.55) / 0.3))
+        } else {
+            dnsDetail = deckProgress < 0.55
+                ? 1 : max(0, 1 - (deckProgress - 0.55) / 0.3)
+        }
+        // Keep the stage geometry stable and fade it, so the shell does not
+        // pop in at a detail threshold while the globe is coming into focus.
+        let stageLineStart = dot.stageLines.count
+        let stagePointStart = dot.stagePoints.count
+        stage.update(dt: simDt, elapsed: elapsed, stageScale: stageScale,
+                     detail: max(0.51, dnsDetail), into: dot)
+        let stageAlpha = 0.03 + 0.97 * smoothstep(0.28, 0.82, dnsDetail)
+        for i in stageLineStart..<dot.stageLines.count { dot.stageLines[i].color.w *= stageAlpha }
+        for i in stagePointStart..<dot.stagePoints.count { dot.stagePoints[i].color.w *= stageAlpha }
 
         for node in nodes {
-            node.appendDraw(dot, elapsed: elapsed, camera: camera)
+            node.appendDraw(dot, elapsed: elapsed, camera: camera, detail: dnsDetail)
         }
-        for device in devices {
-            device.appendDraw(dot, elapsed: elapsed)
+        let focusDepth = camera.viewDepth(of: .zero)
+        for (index, device) in devices.enumerated() {
+            let delta = camera.viewDepth(of: device.position) - focusDepth
+            device.defocus = delta > 0 ? clamp01(delta * 0.16) : 0
+            device.stagger = Float(index % 7) / 7 * 0.10
+            device.appendDraw(dot, elapsed: elapsed, detail: dnsDetail)
         }
         for wire in wires where !wire.hidden {
-            wire.appendDraw(dot, elapsed: elapsed)
+            wire.appendDraw(dot, elapsed: elapsed, detail: dnsDetail)
         }
-        for signal in signals {
-            signal.appendDraw(dot, elapsed: elapsed)
-        }
+        let dnsLive = activeGlobe == .dns && !deckActive
+        if dnsLive {
+            for signal in signals {
+                signal.appendDraw(dot, elapsed: elapsed)
+            }
 
-        var ctx = EffectContext(camera: camera, node: nil, radius: 0.3, point: .zero,
-                                normal: .up, elapsed: elapsed, onShake: { [weak self] amount in
-                                    self?.trauma = min(1, (self?.trauma ?? 0) + amount * 0.55)
-                                }, rng: rng)
-        effects.update(dt: simDt, ctx: ctx, draw: dot)
-        appendHitGeometry(dot)
+            var ctx = EffectContext(camera: camera, node: nil, radius: 0.3, point: .zero,
+                                    normal: .up, elapsed: elapsed, onShake: { [weak self] amount in
+                                        self?.trauma = min(1, (self?.trauma ?? 0) + amount * 0.55)
+                                    }, rng: rng)
+            effects.update(dt: simDt, ctx: ctx, draw: dot)
+            appendHitGeometry(dot)
+            _ = ctx
+        }
 
         for trace in localTraces {
             let t = min(1, trace.age / trace.duration)
@@ -1651,13 +2214,25 @@ final class AtlasRuntime: NSObject, ObservableObject {
                                      color: halo.blocked ? Palette.coral : Palette.gold,
                                      opacity: 0.55 + sin(elapsed * 3.2) * 0.18))
         }
-        _ = ctx
     }
 
     /// Port of the lab's optional Hit geometry overlay: the blast plane, its
     /// normal and the impact centre. It is drawn from the same record the
     /// effects use, so the plane can never disagree with the blast. Shield
     /// hits are 360° and deliberately have no planar overlay.
+    private func appendBackgroundShell(to draw: DrawList, color: SRGB, alpha: Float) {
+        // A fuzzy ring of soft glows, not a line: the shell should read as a
+        // bokeh silhouette rather than sharp geometry behind the active globe.
+        let count = 56
+        for i in 0..<count {
+            let y = 1 - (Float(i) + 0.5) * 2 / Float(count)
+            let r = sqrt(max(0, 1 - y * y))
+            let a = Float(i) * 2.399963
+            let p = Vec3(cos(a) * r * 6.08, y * 6.08, sin(a) * r * 6.08)
+            draw.sprites.append(.glow(p, size: 3.2, color: color, opacity: 0.04 * alpha))
+        }
+    }
+
     private func appendHitGeometry(_ draw: DrawList) {
         guard showHitGeometry,
               let record = lastImpact,
@@ -1711,9 +2286,10 @@ final class AtlasRuntime: NSObject, ObservableObject {
         // close-up ramp attenuated strength, shrank the radius and finally
         // disabled bloom near the camera, which made zoomed-in studies look
         // flat. DOF still eases close-up; bloom does not.
-        let bloomStrength = (0.4 + trauma * 0.32) * 1.5
+        let hostMode = displayedGlobe == .host
+        let densityScale = min(1, 24.0 / Float(max(1, nodes.count)))
+        let bloomStrength = (0.4 + trauma * 0.32) * 1.5 * (hostMode ? 0.18 : densityScale)
         let bloomRadius: Float = 0.5
-        let focus = max(4, focusDistance - globeRadius * 0.7)
         var shake = Vec3.zero
         if motionMode != .off {
             let amount = trauma * trauma * 0.38
@@ -1723,12 +2299,78 @@ final class AtlasRuntime: NSObject, ObservableObject {
                              sin(realTime * 113.9 + 0.4) * amount * 0.14)
             }
         }
+        let p = clamp01(deckProgress)
+        let dnsDetail: Float = deckActive
+            ? (deckTo == .dns
+                ? min(1, max(0.32, (p - 0.35) / 0.3))
+                : (p < 0.45 ? 1 : max(0, 1 - (p - 0.45) / 0.3)))
+            : (activeGlobe == .dns ? 1 : 0.32)
+        let hostDetail: Float = deckActive
+            ? (deckTo == .host
+                ? min(1, max(0.32, (p - 0.35) / 0.3))
+                : (p < 0.45 ? 1 : max(0, 1 - (p - 0.45) / 0.3)))
+            : (activeGlobe == .host ? 1 : 0.32)
+
+        var dnsLayer = RenderLayer(drawList: dot, offset: .zero,
+                                   stageScale: stageScale, detail: dnsDetail)
+        var hostLayer = RenderLayer(drawList: hostScene.draw, offset: .zero,
+                                    stageScale: 1, detail: hostDetail)
+        let backgroundOffset = deckActive ? deckWorldBackground : rearOffset(camera: camera)
+        var layers: [RenderLayer]
+        if deckActive {
+            // The incoming globe is already at its world position. The camera,
+            // not the layer, does the traveling.
+            if deckTo == .host {
+                hostLayer.offset = backgroundOffset
+                // The active globe owns the composite until the hands-off
+                // point; after that the incoming globe is drawn last.
+                layers = [dnsLayer, hostLayer]
+            } else {
+                dnsLayer.offset = backgroundOffset
+                layers = [hostLayer, dnsLayer]
+            }
+        } else if activeGlobe == .dns {
+            hostLayer.offset = backgroundOffset
+            layers = [hostLayer, dnsLayer]
+        } else {
+            dnsLayer.offset = backgroundOffset
+            layers = [dnsLayer, hostLayer]
+        }
+
+        // Camera pan to the inactive globe. The target reaches the incoming
+        // body early so the chrome handoff at p=0.5 already reads as its
+        // close-up; the position arcs around instead of cutting through the
+        // foreground globe.
+        var renderCamera = camera
+        if deckActive {
+            let eased = p * p * (3 - 2 * p)
+            let angle = deckOrbitAngle * eased
+            let direction: Vec3
+            if deckOrbitStart.lengthSq > 0.0001 {
+                direction = deckOrbitStart.normalized
+            } else {
+                direction = Vec3(0, 0, 1)
+            }
+            let rotated = Mat4.rotation(quaternion: Quat(angle: angle, axis: deckOrbitAxis))
+                * SIMD4(direction, 1)
+            let radius = deckOrbitStart.length
+                + (deckOrbitRadiusEnd - deckOrbitStart.length) * eased
+            let position = deckOrbitCenter + Vec3(rotated.x, rotated.y, rotated.z) * radius
+            let targetT = min(1, p / 0.35)
+            let targetK = targetT * targetT * (3 - 2 * targetT)
+            renderCamera.position = position
+            renderCamera.target = deckTargetFrom.lerp(deckTargetFrom + deckWorldBackground, targetK)
+            renderCamera.pan = .zero
+        }
+        let focusCenter = deckActive ? deckWorldBackground : Vec3.zero
+        let focus = max(4, renderCamera.position.distance(to: focusCenter) - globeRadius * 0.7)
+
         return RenderState(
-            camera: camera,
+            camera: renderCamera,
+            layers: layers,
+            activeLayer: 1,
             logicalSize: viewSize,
-            drawList: dot,
             elapsed: elapsed,
-            stageScale: stageScale,
             backdropYaw: elapsed * 0.002,
             shake: shake,
             bloomStrength: bloomStrength,
@@ -1736,8 +2378,10 @@ final class AtlasRuntime: NSObject, ObservableObject {
             bloomEnabled: true,
             dofFocus: focus,
             dofAperture: 0.0004 * dofStrength,
-            dofMaxBlur: 0.010 * dofStrength,
-            dofEnabled: dofStrength > 0.001
+            dofMaxBlur: 0.006 * dofStrength,
+            dofEnabled: false,
+            focusCenter: focusCenter,
+            focusRadius: globeRadius
         )
     }
 
@@ -1754,6 +2398,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     private func handleQuery(_ event: QueryEvent) {
         guard ready else { return }
+        guard activeGlobe == .dns, !deckActive else { return }
         if let status = filter.status, event.status != status { return }
         guard selectionAllows(deviceId: event.deviceId, destinationId: event.destinationId) else { return }
         guard let node = nodeByDest[event.destinationId],
@@ -2274,6 +2919,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
     func setCameraForSnapshot(position: Vec3, target: Vec3) {
         camera.position = position
         camera.target = target
+        camera.up = .up
         camera.pan = .zero
         orbitTarget = target
         cameraFlight = nil
@@ -2305,6 +2951,68 @@ final class AtlasRuntime: NSObject, ObservableObject {
         let wide = clamp((focusDistance - 26) / 3.5, 0, 1)
         let close = 0.55 * (1 - clamp((focusDistance - 11.5) / 14.5, 0, 1))
         dofStrength = max(close, wide)
+    }
+
+    /// Headless checks for the shared-world deck: background depth sign,
+    /// background click target, focus handoff and chrome ownership.
+    func debugGlobeChecks() -> [String] {
+        var failed: [String] = []
+        let savedPaused = paused
+        paused = false
+        defer { paused = savedPaused }
+        if activeGlobe != .dns || displayedGlobe != .dns { failed.append("initial-deck") }
+        let offset = rearOffset(camera: camera)
+        let backgroundDepth = offset.dot(camera.forward)
+        let activeDepth = camera.position.distance(to: orbitTarget)
+        if backgroundDepth > 0, backgroundDepth < activeDepth + globeRadius + 4 {
+            failed.append("background-not-behind")
+        }
+        debugShowHostGlobe()
+        if activeGlobe != .host || displayedGlobe != .host { failed.append("host-debug-state") }
+        if hostScene.snapshot.apps.isEmpty { failed.append("host-demo-empty") }
+        let viewport = SIMD2<Float>(Float(frameViewSize.width), Float(frameViewSize.height))
+        let background = camera.project(rearOffset(camera: camera), viewport: viewport)
+        let activeCenter = camera.project(.zero, viewport: viewport)
+        let activeRadius = globeRadius * Float(frameViewSize.height)
+            / (2 * tan(camera.fov * .pi / 360)) / max(0.001, camera.position.length)
+        let dx = Float(background.x - activeCenter.x)
+        let dy = Float(background.y - activeCenter.y)
+        let length = max(0.001, hypot(dx, dy))
+        debugShowDeck(progress: 0.4)
+        if displayedGlobe != .dns { failed.append("handoff-early") }
+        debugShowDeck(progress: 0.8)
+        if displayedGlobe != .host { failed.append("handoff-late") }
+        debugShowHostGlobe()
+        focusGlobe(.dns)
+        advanceForSnapshot(seconds: 0.9)
+        if displayedGlobe != .dns { failed.append("focus-handoff") }
+        advanceForSnapshot(seconds: 0.9)
+        if activeGlobe != .dns { failed.append("focus-complete") }
+        if !hostLabels.labels.isEmpty { failed.append("hud-labels") }
+        return failed
+    }
+
+    func debugCameraPanChecks() -> [String] {
+        var failed: [String] = []
+        let savedPaused = paused
+        paused = false
+        defer { paused = savedPaused }
+        if activeGlobe != .dns {
+            focusGlobe(.dns)
+            advanceForSnapshot(seconds: 1.4)
+        }
+        focusGlobe(.host)
+        advanceForSnapshot(seconds: 0.92)
+        if displayedGlobe != .host { failed.append("pan-handoff") }
+        advanceForSnapshot(seconds: 0.95)
+        if activeGlobe != .host { failed.append("pan-complete") }
+        if camera.position.distance(to: .zero) < 8 { failed.append("pan-camera") }
+        let rear = rearOffset(camera: camera)
+        if rear.dot(camera.forward) <= 0 { failed.append("pan-background") }
+        focusGlobe(.dns)
+        advanceForSnapshot(seconds: 1.8)
+        if activeGlobe != .dns { failed.append("pan-return") }
+        return failed
     }
 
     func debugPickProbe() -> (destination: Bool, device: Bool) {
@@ -3355,6 +4063,10 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     private func updateLabels(force: Bool) {
         _ = force
+        guard dnsHasVisualData else {
+            labels.labels = []
+            return
+        }
         var destSet = Set<String>()
         var deviceSet = Set<String>()
         if labelMode != .off {
@@ -3728,8 +4440,8 @@ final class AtlasRuntime: NSObject, ObservableObject {
         let left = metrics.railLeftWidth
         let right = metrics.railRightWidth
         let free = max(320, width - left - right - 80)
-        let desired = min(free * 0.82, height * 0.64)
-        let diameter = max(360, min(720, desired))
+        let desired = min(free * 0.70, height * 0.55)
+        let diameter = max(330, min(720, desired))
         let tanFov = tan(35 * Float.pi / 360)
         return globeRadius * Float(height) / max(0.001, Float(diameter) * tanFov)
     }
@@ -3962,6 +4674,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     func resetCamera() {
         userZoomed = false
+        camera.up = .up
         let center = Vec3(0, 0.15, 0)
         let fit = currentFitDistance()
         updateCameraLimits()
@@ -3971,6 +4684,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     func topCamera() {
         userZoomed = false
+        camera.up = .up
         let center = Vec3(0, 0.15, 0)
         let fit = currentFitDistance()
         updateCameraLimits()

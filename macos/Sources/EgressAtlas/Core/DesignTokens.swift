@@ -98,7 +98,7 @@ struct Metrics: Equatable {
     var showTopCenter: Bool { !narrow }
     var showSearchLabel: Bool { !narrow }
     var showFilterCounts: Bool { !narrowest }
-    var showSourceLabel: Bool { true }
+    var showSourceLabel: Bool { !tiny }
     var showFieldCaption: Bool { !tiny && !mediumHeight && !narrowest }
     var showIndexCopy: Bool { !tiny }
     var showWindowCopy: Bool { !tiny }
@@ -112,12 +112,13 @@ struct Metrics: Equatable {
 }
 
 enum SettingsTab: String, CaseIterable {
-    case source, display, motion, about
+    case source, display, motion, host, about
     var title: String {
         switch self {
         case .source: return "Source"
         case .display: return "Display"
         case .motion: return "Motion"
+        case .host: return "Host"
         case .about: return "About"
         }
     }

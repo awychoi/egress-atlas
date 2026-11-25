@@ -5,6 +5,14 @@ struct AtlasDock: View {
     let metrics: Metrics
 
     var body: some View {
+        if runtime.displayedGlobe == .host {
+            HostDock(runtime: runtime, metrics: metrics)
+        } else {
+            dnsBody
+        }
+    }
+
+    private var dnsBody: some View {
         VStack(spacing: 0) {
             HStack(spacing: metrics.tiny ? 9 : 16) {
                 clock.layoutPriority(1)
@@ -435,21 +443,24 @@ struct AtlasTimelineChart: View {
 struct FieldCaption: View {
     @ObservedObject var runtime: AtlasRuntime
     var body: some View {
+        let host = runtime.displayedGlobe == .host
+        let tone = host ? Palette.host : Palette.gold
         VStack(spacing: 5) {
-            Eyebrow(text: runtime.isReplay ? "Replay" : "Live", size: 7,
-                    color: runtime.isReplay ? Palette.gold.opacity(0.7) : Palette.faint.color,
+            Eyebrow(text: host ? "Host" : (runtime.isReplay ? "Replay" : "Live"), size: 7,
+                    color: host ? Palette.host.opacity(0.72)
+                        : (runtime.isReplay ? Palette.gold.opacity(0.7) : Palette.faint.color),
                     trackingEm: 0.22)
             HStack(spacing: 6) {
                 Rectangle()
-                    .fill(LinearGradient(colors: [.clear, Palette.gold.opacity(0.28), .clear],
+                    .fill(LinearGradient(colors: [.clear, tone.opacity(0.28), .clear],
                                          startPoint: .leading, endPoint: .trailing))
                     .frame(width: 34, height: 1)
-                Text((runtime.paused ? "paused" : runtime.lastEventAgo).uppercased())
+                Text((host ? "this mac" : (runtime.paused ? "paused" : runtime.lastEventAgo)).uppercased())
                     .font(.atlasMono(6.5, .regular))
                     .tracking(6.5 * 0.14)
-                    .foregroundColor(Palette.muted.opacity(0.55))
+                    .foregroundColor(host ? Palette.host.opacity(0.65) : Palette.muted.opacity(0.55))
                 Rectangle()
-                    .fill(LinearGradient(colors: [.clear, Palette.gold.opacity(0.28), .clear],
+                    .fill(LinearGradient(colors: [.clear, tone.opacity(0.28), .clear],
                                          startPoint: .leading, endPoint: .trailing))
                     .frame(width: 34, height: 1)
             }

@@ -587,4 +587,28 @@ enum Format {
     static func rate(_ qps: Float) -> String {
         qps >= 10 ? String(Int(qps.rounded())) : String(format: "%.1f", qps)
     }
+
+    /// Host-traffic data sizes. Binary units with the familiar KB/MB labels;
+    /// the host panel is the only place that needs them.
+    static func bytes(_ value: Double) -> String {
+        let v = max(0, value)
+        if v >= 1_073_741_824 { return String(format: "%.1f GB", v / 1_073_741_824) }
+        if v >= 1_048_576 { return String(format: v >= 10_485_760 ? "%.0f MB" : "%.1f MB", v / 1_048_576) }
+        if v >= 1024 { return String(format: v >= 10_240 ? "%.0f KB" : "%.1f KB", v / 1024) }
+        return String(format: "%.0f B", v)
+    }
+
+    static func dataRate(_ value: Double) -> String {
+        bytes(value) + "/s"
+    }
+
+    /// Narrow-rail rate: no space and a short unit. "1.4M/s" instead of
+    /// "1.4 MB/s" keeps both directions on one line in a 300 px rail.
+    static func rateCompact(_ value: Double) -> String {
+        bytes(value).replacingOccurrences(of: " ", with: "") + "/s"
+    }
+
+    static func bytes(_ value: UInt64) -> String {
+        bytes(Double(value))
+    }
 }

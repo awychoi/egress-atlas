@@ -21,6 +21,9 @@ struct SnapshotRootView: View {
                 LabelOverlay(store: runtime.labels)
                     .allowsHitTesting(false)
                     .zIndex(2)
+                LabelOverlay(store: runtime.hostLabels)
+                    .allowsHitTesting(false)
+                    .zIndex(2)
                 AtlasChrome(runtime: runtime, metrics: metrics)
                     .zIndex(5)
                 if AtlasRenderFlags.snapshot && runtime.replayJumpOpen {

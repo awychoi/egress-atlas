@@ -270,11 +270,19 @@ final class GlobeMTKView: MTKView {
             dragOrigin = nil
             windowOriginAtMouseDown = nil
             guard !isOverTopBar(p), let runtime,
-                  let pick = runtime.pick(at: p, viewSize: bounds.size) else { return }
-            // The first click of the pair already selected this body.
-            // Selecting again must not toggle it off before the camera
-            // flight starts, which is why focus owns a non-toggling select.
-            runtime.focus(on: pick)
+                  let pick = runtime.globePick(at: p, viewSize: bounds.size) else { return }
+            switch pick {
+            case .dns(let selection):
+                // The first click of the pair already selected this body.
+                // Selecting again must not toggle it off before the camera
+                // flight starts, which is why focus owns a non-toggling select.
+                runtime.focus(on: selection)
+            case .host(let selection):
+                runtime.selectHost(selection)
+                runtime.focusHostSelection()
+            case .focusGlobe(let kind):
+                runtime.focusGlobe(kind)
+            }
             return
         }
         clickOrigin = p
@@ -319,10 +327,18 @@ final class GlobeMTKView: MTKView {
         let p = topPoint(event)
         guard hypot(p.x - origin.x, p.y - origin.y) <= 6, !isOverTopBar(p) else { return }
         guard let runtime else { return }
-        if let pick = runtime.pick(at: p, viewSize: bounds.size) {
-            runtime.select(pick)
-        } else {
-            runtime.clearSelection()
+        guard let pick = runtime.globePick(at: p, viewSize: bounds.size) else {
+            if runtime.activeGlobe == .host { runtime.clearHostSelection() }
+            else { runtime.clearSelection() }
+            return
+        }
+        switch pick {
+        case .dns(let selection):
+            runtime.select(selection)
+        case .host(let selection):
+            runtime.selectHost(selection)
+        case .focusGlobe(let kind):
+            runtime.focusGlobe(kind)
         }
     }
 
@@ -354,7 +370,7 @@ final class GlobeMTKView: MTKView {
     /// that pass kept winning and the cursor flickered hand → arrow while the
     /// pointer was nowhere near a pickable body. Owning `cursorUpdate` makes
     /// this the single source of truth for the field cursor.
-    private func updateCursor(at p: CGPoint, pick: Selection?) {
+    private func updateCursor(at p: CGPoint, interactive: Bool) {
         guard let runtime else { return }
         // A command palette owns its own I-beam cursor. Do not override it.
         if runtime.commandOpen { return }
@@ -366,15 +382,15 @@ final class GlobeMTKView: MTKView {
             NSCursor.closedHand.set()
             return
         }
-        (pick == nil ? NSCursor.openHand : NSCursor.pointingHand).set()
+        (interactive ? NSCursor.pointingHand : NSCursor.openHand).set()
     }
 
     override func cursorUpdate(with event: NSEvent) {
         guard let runtime, !runtime.commandOpen else { return }
         let p = topPoint(event)
         let overChrome = runtime.settingsOpen || isOverChrome(p, size: bounds.size)
-        let pick = overChrome ? nil : runtime.pick(at: p, viewSize: bounds.size)
-        updateCursor(at: p, pick: pick)
+        let pick = overChrome ? nil : runtime.globePick(at: p, viewSize: bounds.size)
+        updateCursor(at: p, interactive: pick != nil)
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -382,21 +398,21 @@ final class GlobeMTKView: MTKView {
         let p = topPoint(event)
         // A command palette owns its own I-beam cursor. Do not override it.
         if runtime.commandOpen {
-            runtime.setHovered(nil)
+            runtime.setGlobeHover(nil)
             return
         }
         if runtime.settingsOpen || isOverChrome(p, size: bounds.size) {
-            runtime.setHovered(nil)
-            updateCursor(at: p, pick: nil)
+            runtime.setGlobeHover(nil)
+            updateCursor(at: p, interactive: false)
             return
         }
-        let pick = runtime.pick(at: p, viewSize: bounds.size)
-        runtime.setHovered(pick)
-        updateCursor(at: p, pick: pick)
+        let pick = runtime.globePick(at: p, viewSize: bounds.size)
+        runtime.setGlobeHover(pick)
+        updateCursor(at: p, interactive: pick != nil)
     }
 
     override func mouseExited(with event: NSEvent) {
-        runtime?.setHovered(nil)
+        runtime?.setGlobeHover(nil)
         NSCursor.arrow.set()
     }
 
@@ -427,9 +443,9 @@ final class GlobeMTKView: MTKView {
         runtime?.endPan()
         let p = topPoint(event)
         let overChrome = runtime?.settingsOpen == true || isOverChrome(p, size: bounds.size)
-        let pick = overChrome ? nil : runtime?.pick(at: p, viewSize: bounds.size)
-        runtime?.setHovered(pick)
-        updateCursor(at: p, pick: pick)
+        let pick = overChrome ? nil : runtime?.globePick(at: p, viewSize: bounds.size)
+        runtime?.setGlobeHover(pick)
+        updateCursor(at: p, interactive: pick != nil)
     }
 
     override func otherMouseDown(with event: NSEvent) {

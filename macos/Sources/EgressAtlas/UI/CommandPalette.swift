@@ -15,8 +15,28 @@ struct CommandPalette: View {
         let blocked: Bool
     }
 
+    private var hostMode: Bool { runtime.displayedGlobe == .host }
+
     private var allItems: [Item] {
         var items: [Item] = []
+        if hostMode {
+            for app in runtime.hostSnapshot.apps {
+                items.append(Item(
+                    id: "hostapp:\(app.id)", kind: 3, title: app.name,
+                    detail: "\(Format.dataRate(app.rxPerSecond)) in · \(Format.dataRate(app.txPerSecond)) out · \(app.socketCount) sockets",
+                    haystack: "\(app.name) \(app.detail) app service".lowercased(),
+                    blocked: false
+                ))
+            }
+            for domain in runtime.hostSnapshot.domains {
+                items.append(Item(
+                    id: "hostdomain:\(domain.id)", kind: 4, title: domain.name,
+                    detail: "\(domain.service) · \(domain.confidence.label) · \(domain.appIDs.count) apps",
+                    haystack: "\(domain.name) \(domain.service) \(domain.confidence.label) domain remote".lowercased(),
+                    blocked: false
+                ))
+            }
+        } else {
         for device in runtime.network.devices {
             let alias = runtime.deviceAlias(device)
             let name = runtime.deviceDisplayName(device)
@@ -44,6 +64,7 @@ struct CommandPalette: View {
                 blocked: destination.status == .blocked
             ))
         }
+        }
         let actions: [(String, String, String)] = [
             ("open-network", "Open network panel", "devices, destinations, clients"),
             ("open-queries", "Open queries panel", "the live query feed"),
@@ -55,6 +76,10 @@ struct CommandPalette: View {
             ("settings", "Open settings", "source, display, motion, about"),
             ("reset-camera", "Reset camera", "return to the opening view"),
             ("labels-all", "Show all labels", "keep every orb labelled"),
+            ("focus-dns", "Focus the DNS globe", "warm network instrument"),
+            ("focus-host", "Focus the HOST globe", "cool this-Mac instrument"),
+            ("settings-host", "Open host settings", "monitor, scope, domain source"),
+            ("host-pause", runtime.hostPaused ? "Resume host monitoring" : "Pause host monitoring", "socket sampling"),
         ]
         for (key, title, detail) in actions {
             items.append(Item(
@@ -69,9 +94,11 @@ struct CommandPalette: View {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let all = allItems
         if q.isEmpty {
-            let devices = all.filter { $0.kind == 0 }.prefix(4)
             let actions = all.filter { $0.kind == 2 }.prefix(4)
-            return Array(actions) + Array(devices)
+            if hostMode {
+                return Array(actions) + Array(all.filter { $0.kind == 3 }.prefix(4))
+            }
+            return Array(actions) + Array(all.filter { $0.kind == 0 }.prefix(4))
         }
         return Array(all.filter { $0.haystack.contains(q) }.prefix(14))
     }
@@ -97,10 +124,19 @@ struct CommandPalette: View {
                             } else {
                                 if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                                     group("ACTIONS", items: filtered.filter { $0.kind == 2 })
-                                    group("DEVICES", items: filtered.filter { $0.kind == 0 })
+                                    if hostMode {
+                                        group("APPS", items: filtered.filter { $0.kind == 3 })
+                                    } else {
+                                        group("DEVICES", items: filtered.filter { $0.kind == 0 })
+                                    }
                                 } else {
-                                    group("DEVICES", items: filtered.filter { $0.kind == 0 })
-                                    group("DESTINATIONS", items: filtered.filter { $0.kind == 1 })
+                                    if hostMode {
+                                        group("APPS", items: filtered.filter { $0.kind == 3 })
+                                        group("REMOTES", items: filtered.filter { $0.kind == 4 })
+                                    } else {
+                                        group("DEVICES", items: filtered.filter { $0.kind == 0 })
+                                        group("DESTINATIONS", items: filtered.filter { $0.kind == 1 })
+                                    }
                                     group("ACTIONS", items: filtered.filter { $0.kind == 2 })
                                 }
                             }
@@ -187,6 +223,10 @@ struct CommandPalette: View {
                                 AtlasDeviceMark(color: Palette.signal.color, size: 18)
                             } else if item.kind == 1 {
                                 AtlasDestinationMark(color: item.blocked ? Palette.coral.color : Palette.gold.color, size: 18)
+                            } else if item.kind == 3 {
+                                AtlasDeviceMark(color: Palette.host.color, size: 18)
+                            } else if item.kind == 4 {
+                                AtlasDestinationMark(color: Palette.hostGlow.color, size: 18)
                             } else {
                                 Image(systemName: "return")
                                     .font(.system(size: 11, weight: .medium))
@@ -206,7 +246,10 @@ struct CommandPalette: View {
                                     .lineLimit(1)
                             }
                             Spacer(minLength: 4)
-                            Text(item.kind == 0 ? "DEVICE" : (item.kind == 1 ? "DEST" : "ACTION"))
+                            Text(item.kind == 0 ? "DEVICE"
+                                 : (item.kind == 1 ? "DEST"
+                                    : (item.kind == 3 ? "APP"
+                                       : (item.kind == 4 ? "REMOTE" : "ACTION"))))
                                 .font(.atlasMono(6.2, .regular))
                                 .tracking(6.2 * 0.1)
                                 .foregroundColor(Palette.faint.color)
@@ -272,20 +315,34 @@ struct CommandPalette: View {
             case "settings": runtime.settingsTab = .source; runtime.settingsOpen = true
             case "reset-camera": runtime.resetCamera()
             case "labels-all": runtime.setLabelMode(.all)
+            case "focus-dns": runtime.focusGlobe(.dns)
+            case "focus-host": runtime.focusGlobe(.host)
+            case "settings-host": runtime.settingsTab = .host; runtime.settingsOpen = true
+            case "host-pause": runtime.setHostPaused(!runtime.hostPaused)
             default: break
             }
             runtime.showToast(item.title, tone: .signal)
             return
         }
-        if item.kind == 0 {
+        if item.kind == 3 {
+            let id = String(item.id.dropFirst("hostapp:".count))
+            runtime.selectHost(.app(id))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { runtime.focusHostSelection() }
+        } else if item.kind == 4 {
+            let id = String(item.id.dropFirst("hostdomain:".count))
+            runtime.selectHost(.domain(id))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { runtime.focusHostSelection() }
+        } else if item.kind == 0 {
             let id = String(item.id.dropFirst("device:".count))
             runtime.select(.device(id), toggle: false)
         } else {
             let id = String(item.id.dropFirst("destination:".count))
             runtime.select(.destination(id), toggle: false)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
-            runtime.focusSelection()
+        if item.kind == 0 || item.kind == 1 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+                runtime.focusSelection()
+            }
         }
         runtime.showToast("Tracing \(item.title)", tone: .signal)
     }

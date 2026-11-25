@@ -102,6 +102,40 @@ struct WarmGlass: View {
     }
 }
 
+/// The cool twin of WarmGlass. Same construction and radii, host climate.
+struct CoolGlass: View {
+    var radius: CGFloat = 12
+    var strong = false
+    var body: some View {
+        ZStack {
+            if !AtlasRenderFlags.snapshot {
+                VisualEffectView(material: .hudWindow, blending: .withinWindow)
+                    .opacity(0.55)
+            }
+            LinearGradient(
+                stops: [
+                    .init(color: Color.rgba("0c1b22", strong ? 0.78 : 0.58), location: 0),
+                    .init(color: Color.rgba("050d11", strong ? 0.94 : 0.78), location: 0.58),
+                    .init(color: Color.rgba("040a0d", strong ? 0.97 : 0.86), location: 1),
+                ],
+                startPoint: .topLeading, endPoint: .bottomTrailing
+            )
+        }
+        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(Palette.hostText.opacity(0.11), lineWidth: 1)
+        )
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color.rgba("dff9ff", 0.05))
+                .frame(height: 1)
+                .padding(.horizontal, 1)
+                .padding(.top, 1)
+        }
+    }
+}
+
 struct PanelShadow: ViewModifier {
     var radius: CGFloat
     var opacity: Double

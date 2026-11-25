@@ -18,6 +18,7 @@ struct SettingsPanel: View {
                     case .source: sourceSection
                     case .display: fieldSection
                     case .motion: motionSection
+                    case .host: hostSection
                     case .about: aboutSection
                     }
                 }
@@ -30,6 +31,7 @@ struct SettingsPanel: View {
         .frame(maxHeight: metrics.mediumHeight
                ? max(280, metrics.height - metrics.railTop - 28)
                : max(280, metrics.height - metrics.railTop - metrics.railBottom + 12))
+        .background(Palette.deep.color.opacity(0.985))
         .background(WarmGlass(radius: 12, strong: true))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Palette.text.opacity(0.11), lineWidth: 1))
@@ -356,6 +358,105 @@ struct SettingsPanel: View {
             .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Palette.text.opacity(0.1), lineWidth: 1))
             .disableAutocorrection(true)
             .accessibilityLabel(label)
+        }
+    }
+
+    private var hostSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SectionKicker(title: "Host traffic", value: runtime.hostAvailable ? "live" : "unavailable")
+            HStack(alignment: .top, spacing: 9) {
+                Circle()
+                    .fill(runtime.hostAvailable ? Palette.host.color : Palette.coral.color)
+                    .frame(width: 7, height: 7)
+                    .shadow(color: (runtime.hostAvailable ? Palette.host : Palette.coral).opacity(0.55), radius: 5)
+                    .padding(.top, 4)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("This Mac")
+                        .font(.atlasSans(11.5, .medium))
+                        .foregroundColor(Palette.hostText.color)
+                    Text("\(Format.dataRate(runtime.hostSnapshot.rxPerSecond)) in · \(Format.dataRate(runtime.hostSnapshot.txPerSecond)) out · \(runtime.hostSnapshot.apps.count) apps · \(runtime.hostSnapshot.domains.count) remotes")
+                        .font(.atlasMono(6.8, .regular))
+                        .foregroundColor(Palette.hostMeta.color)
+                        .lineLimit(2)
+                    if let note = runtime.hostNote {
+                        Text(note)
+                            .font(.atlasSans(8.5, .regular))
+                            .foregroundColor(Palette.coral.color)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .padding(.top, 8)
+
+            Text("Reads this Mac's own socket counters. No packet capture, no payloads, no history. It never contacts this Mac's traffic.")
+                .font(.atlasSans(9, .regular))
+                .lineSpacing(2)
+                .foregroundColor(Palette.hostMuted.color)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 8)
+
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Host monitoring")
+                        .font(.atlasSans(10.5, .medium))
+                        .foregroundColor(Palette.hostText2.color)
+                    Text(runtime.hostPaused ? "paused; existing bodies stay on screen" : "samples netstat once a second")
+                        .font(.atlasSans(8.5, .regular))
+                        .foregroundColor(Palette.hostMeta.color)
+                }
+                Spacer()
+                TinyToggle(isOn: Binding(get: { !runtime.hostPaused },
+                                         set: { runtime.setHostPaused(!$0) }),
+                           label: "Host monitoring")
+            }
+            .padding(.vertical, 8)
+
+            Text("Scope")
+                .font(.atlasSans(10.5, .medium))
+                .foregroundColor(Palette.hostText2.color)
+                .padding(.top, 6)
+            ForEach(HostScope.allCases) { scope in
+                HStack(alignment: .center, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(scope.title)
+                            .font(.atlasSans(9.5, .regular))
+                            .foregroundColor(Palette.hostText2.color)
+                        Text(scopeDetail(scope))
+                            .font(.atlasSans(8, .regular))
+                            .foregroundColor(Palette.hostMeta.color)
+                    }
+                    Spacer()
+                    TinyToggle(isOn: Binding(get: { runtime.hostScopes.contains(scope) },
+                                             set: { runtime.setHostScope(scope, enabled: $0) }),
+                               label: "\(scope.title) traffic")
+                }
+                .padding(.vertical, 5)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Domain names")
+                    .font(.atlasSans(10.5, .medium))
+                    .foregroundColor(Palette.hostText2.color)
+                Text(runtime.isLiveSource
+                     ? (runtime.hostDomainStatus ?? "Pi-hole dnsmasq log is the source of exact answer IPs. Unmatched endpoints stay IP:port.")
+                     : "Connect a live Pi-hole to infer domain names. Host traffic still works without it, by IP:port.")
+                    .font(.atlasSans(8.5, .regular))
+                    .lineSpacing(2)
+                    .foregroundColor(runtime.hostDomainStatus == nil ? Palette.hostMeta.color : Palette.hostFault.color)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 12)
+
+        }
+        .padding(.top, 12)
+    }
+
+    private func scopeDetail(_ scope: HostScope) -> String {
+        switch scope {
+        case .internet: return "public remote addresses"
+        case .lan: return "private and link-local peers"
+        case .vpn: return "100.64/10 and tunnel ranges"
+        case .loopback: return "local IPC, exposed and counted twice"
         }
     }
 

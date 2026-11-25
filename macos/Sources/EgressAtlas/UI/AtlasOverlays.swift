@@ -101,6 +101,15 @@ struct AtlasChrome: View {
                         .zIndex(4)
                 }
 
+                if let hint = runtime.inactiveGlobeHint(viewSize: geo.size) {
+                    BackgroundGlobeHint(kind: hint.kind)
+                        .position(x: min(max(hint.point.x, 90), geo.size.width - 90),
+                                  y: min(max(hint.point.y + hint.radius + 16, 120),
+                                         geo.size.height - 150))
+                        .zIndex(7)
+                        .transition(.opacity)
+                }
+
                 AtlasRails(runtime: runtime, metrics: metrics)
                     .zIndex(6)
 
@@ -151,7 +160,13 @@ struct AtlasChrome: View {
                         .onTapGesture { runtime.helpOpen = false }
                         .frame(width: geo.size.width, height: geo.size.height)
                         .zIndex(13)
-                    HelpPanel(runtime: runtime, metrics: metrics)
+                    Group {
+                        if runtime.displayedGlobe == .host {
+                            HostHelpPanel(runtime: runtime, metrics: metrics)
+                        } else {
+                            HelpPanel(runtime: runtime, metrics: metrics)
+                        }
+                    }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                         .padding(.top, metrics.railTop)
                         .padding(.trailing, metrics.edge)
@@ -166,6 +181,13 @@ struct AtlasChrome: View {
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
+            .onAppear { enforceRailExclusivity(width: geo.size.width) }
+            .onChange(of: geo.size.width) { width in enforceRailExclusivity(width: width) }
         }
+    }
+
+    private func enforceRailExclusivity(width: CGFloat) {
+        guard width <= 1020, runtime.leftRailOpen, runtime.rightRailOpen else { return }
+        runtime.rightRailOpen = false
     }
 }

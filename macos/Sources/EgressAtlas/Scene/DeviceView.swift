@@ -28,6 +28,13 @@ final class DeviceView {
     var displayVisibility: Float = 1
     var windowVisible = true
     var windowPresence: Float = 1
+    /// Role tint. DNS devices keep the default signal blue; host apps set
+    /// teal so app bodies never read as the same object class as domains.
+    var bodyBase: SRGB = Palette.signal
+    var bodyHot: SRGB = Palette.signalIce
+    /// Per-device defocus and stagger supplied by the owning scene.
+    var defocus: Float = 0
+    var stagger: Float = 0
 
     enum AppearanceStyle: CaseIterable {
         case bloom
@@ -64,8 +71,8 @@ final class DeviceView {
         self.radius = radius
         self.phase = rng.next() * .pi * 2
 
-        let signal = Palette.signal
-        let ice = Palette.signalIce
+        let signal = bodyBase
+        let ice = bodyHot
         for _ in 0..<12 {
             let r = 0.42 + rng.next() * 0.32
             let speed = 0.4 + rng.next() * 1.1
@@ -148,10 +155,18 @@ final class DeviceView {
         _ = elapsed
     }
 
-    func appendDraw(_ draw: DrawList, elapsed: Float) {
+    func appendDraw(_ draw: DrawList, elapsed: Float, detail: Float = 1) {
         guard windowPresence > 0.001 else { return }
         let visibility = displayVisibility * windowPresence
         let selectedBoost: Float = selected ? 1.1 : 1
+        let localDetail = clamp01((detail - stagger) / max(0.001, 1 - stagger))
+        let blurAlpha = max(1 - smoothstep(0.45, 0.92, localDetail), defocus * 0.85)
+        let sharpness = max(0.12, 1 - defocus * 0.96)
+        let focusLight = max(0.18, 1 - defocus * 1.08)
+        let glowLight = max(0.025, 1 - defocus * 1.15)
+        let orbAlpha = smoothstep(0.30, 0.75, localDetail) * sharpness
+        let gyroAlpha = smoothstep(0.52, 0.82, localDetail) * focusLight
+        let padAlpha = smoothstep(0.58, 0.88, localDetail) * focusLight
         // Devices outside the history window shrink toward the shell as they
         // fade, so a range change reads as an arrival or retirement rather
         // than a pop. An arrival triggered by a live query also plays one of a
@@ -181,32 +196,46 @@ final class DeviceView {
         let center4 = model * SIMD4(0, 0.33, 0, 1)
         let center = Vec3(center4.x, center4.y, center4.z)
 
+        if blurAlpha > 0.01 {
+            let backgroundDim: Float = detail < 0.5 ? 0.18 : 1
+            draw.points.append(PointVertex(center,
+                                           rgba(bodyBase, 0.16 * blurAlpha * visibility),
+                                           size: 1.2))
+        }
+
         // Orb.
+        if orbAlpha > 0.01 {
         let orbScale = (0.9 + sin(elapsed * 3.1 + phase) * 0.08) * 1.1
         draw.addSphere(center: center, radius: radius * orbScale * grow,
-                       color: rgba(Palette.signalIce, 0.96 * visibility * selectedBoost))
+                       color: rgba(bodyHot, 0.96 * orbAlpha * visibility * selectedBoost))
 
         // Glow and broad halo.
         let pulse = 1 + sin(elapsed * 2.2 + phase) * 0.1
-        draw.sprites.append(.glow(center, size: 1.15 * pulse * grow, color: Palette.signal,
-                                  opacity: (0.42 + sin(elapsed * 2.2 + phase) * 0.08) * visibility))
-        if shotAge < 1 {
-            let t = min(1, shotAge / 0.5)
-            draw.sprites.append(.glow(center, size: (2.7 + t * 2.6) * grow, color: Palette.signal,
-                                      opacity: pow(1 - t, 1.8) * 0.28 * visibility))
-        } else {
-            draw.sprites.append(.glow(center, size: 2.7 * grow, color: Palette.signal,
-                                      opacity: 0.12 * visibility))
+        draw.sprites.append(.glow(center, size: 1.15 * pulse * grow * (0.30 + 0.70 * glowLight),
+                                  color: bodyBase,
+                                  opacity: (0.42 + sin(elapsed * 2.2 + phase) * 0.08)
+                                    * orbAlpha * glowLight * visibility))
+        if orbAlpha > 0.05 {
+            if shotAge < 1 {
+                let t = min(1, shotAge / 0.5)
+                draw.sprites.append(.glow(center, size: (2.7 + t * 2.6) * grow, color: bodyBase,
+                                          opacity: pow(1 - t, 1.8) * 0.28 * orbAlpha * visibility))
+            } else {
+                draw.sprites.append(.glow(center, size: 2.7 * grow, color: bodyBase,
+                                          opacity: 0.12 * orbAlpha * visibility))
+            }
+        }
         }
         if selected {
-            draw.sprites.append(.glow(center, size: 2.1 * grow, color: Palette.signalIce,
-                                      opacity: 0.34 * visibility))
+            draw.sprites.append(.glow(center, size: 2.1 * grow, color: bodyHot,
+                                      opacity: 0.34 * orbAlpha * visibility))
         }
         if appearFlash > 0.001 {
-            draw.sprites.append(.glow(center, size: 2.6 * grow, color: Palette.signalIce,
-                                      opacity: appearFlash))
+            draw.sprites.append(.glow(center, size: 2.6 * grow, color: bodyHot,
+                                      opacity: appearFlash * orbAlpha))
         }
 
+        if gyroAlpha > 0.01 {
         // Three gyros. The torus supplies the soft bloom body; the 1 px line
         // keeps the instrument ring legible at native resolution, where the
         // web's 0.0045 world tube is sub-pixel.
@@ -216,8 +245,8 @@ final class DeviceView {
             let angle = gyroAngles[i]
             let local = Mat4.eulerXYZ(base.x, base.y + angle.y, base.z + angle.z)
             let m = model * Mat4.translation(Vec3(0, 0.33, 0)) * local * Mat4.scale(gyroScale)
-            let color = i == 1 ? Palette.signalIce : Palette.signal
-            let alpha = (0.28 + sin(elapsed * 1.6 + Float(i) * 2.1) * 0.1) * visibility
+            let color = i == 1 ? bodyHot : bodyBase
+            let alpha = (0.28 + sin(elapsed * 1.6 + Float(i) * 2.1) * 0.1) * gyroAlpha * visibility
             draw.addMesh(.torus, MeshInstance(model: m, color: rgba(color, alpha)))
             var prev: Vec3?
             for s in 0...72 {
@@ -238,10 +267,12 @@ final class DeviceView {
             let local = Vec3(cos(a) * m.radius, sin(a * 1.7 + m.tilt) * 0.24, sin(a) * m.radius)
             let p4 = model * SIMD4(local.x, local.y + 0.33, local.z, 1)
             let p = Vec3(p4.x, p4.y, p4.z)
-            let alpha = (0.22 + sin(elapsed * 2 + m.phase) * 0.16) * visibility
+            let alpha = (0.22 + sin(elapsed * 2 + m.phase) * 0.16) * gyroAlpha * visibility
             draw.points.append(PointVertex(p, rgba(m.color, alpha), size: m.size * grow))
         }
 
+        }
+        if padAlpha > 0.01 {
         // Pad: ring, ticks, pool and stem.
         let padRotation = Mat4.eulerXYZ(0, padYaw, 0)
         let padModel = model * Mat4.translation(Vec3(0, 0.015, 0)) * padRotation
@@ -251,7 +282,7 @@ final class DeviceView {
             let p4 = padModel * SIMD4(cos(a) * 0.82, 0, sin(a) * 0.82, 1)
             let p = Vec3(p4.x, p4.y, p4.z)
             if let previous {
-                draw.addLine(previous, p, rgba(Palette.signal, min(1, 0.34 * visibility * selectedBoost * 1.45)))
+                draw.addLine(previous, p, rgba(bodyBase, min(1, padAlpha * 0.34 * visibility * selectedBoost * 1.45)))
             }
             previous = p
         }
@@ -263,14 +294,15 @@ final class DeviceView {
             let a4 = padModelNoYaw * SIMD4(cos(a) * inner, 0, sin(a) * inner, 1)
             let b4 = padModelNoYaw * SIMD4(cos(a) * outer, 0, sin(a) * outer, 1)
             draw.addLine(Vec3(a4.x, a4.y, a4.z), Vec3(b4.x, b4.y, b4.z),
-                         rgba(Palette.signalIce, 0.22 * visibility * selectedBoost))
+                         rgba(bodyHot, 0.22 * padAlpha * visibility * selectedBoost))
         }
         let pool = padModel * SIMD4(0, -0.002, 0, 1)
         draw.sprites.append(.glow(Vec3(pool.x, pool.y, pool.z), size: 1.9 * grow,
-                                  color: Palette.signal, opacity: min(1, 0.15 * visibility * selectedBoost * 1.3)))
+                                  color: bodyBase, opacity: min(1, 0.15 * padAlpha * visibility * selectedBoost * 1.3)))
         let stemA = model * SIMD4(0, 0.02, 0, 1)
         let stemB = model * SIMD4(0, 0.31, 0, 1)
         draw.addLine(Vec3(stemA.x, stemA.y, stemA.z), Vec3(stemB.x, stemB.y, stemB.z),
-                     rgba(Palette.signal, 0.18 * visibility * selectedBoost))
+                     rgba(bodyBase, 0.18 * padAlpha * visibility * selectedBoost))
+        }
     }
 }

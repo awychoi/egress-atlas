@@ -4,12 +4,26 @@ import MetalKit
 import simd
 import QuartzCore
 
+/// One globe's contribution to a frame. The active layer sits at the world
+/// origin; the background layer is rendered through a camera shifted by
+/// `offset`, so its local-origin geometry appears behind the active globe
+/// without touching its vertices.
+struct RenderLayer {
+    let drawList: DrawList
+    var offset: Vec3 = .zero
+    var stageScale: Float = 1
+    var detail: Float = 1
+    var opacity: Float = 1
+}
+
 struct RenderState {
     var camera: Camera
+    /// Background first, active last. The active layer is at `offset == .zero`
+    /// when a transition is not in flight.
+    var layers: [RenderLayer]
+    var activeLayer: Int
     var logicalSize: CGSize
-    var drawList: DrawList
     var elapsed: Float
-    var stageScale: Float
     var backdropYaw: Float
     var shake: Vec3
     var bloomStrength: Float
@@ -20,6 +34,14 @@ struct RenderState {
     var dofMaxBlur: Float
     var dofEnabled: Bool
     var exposure: Float = 0.98
+    /// The sphere the analytic depth-of-field focuses on. `zero` for the
+    /// active globe at the world origin; during a transition it follows the
+    /// incoming globe.
+    var focusCenter: Vec3 = .zero
+    var focusRadius: Float = 6
+
+    var drawList: DrawList { layers[activeLayer].drawList }
+    var stageScale: Float { layers[activeLayer].stageScale }
 }
 
 private struct DynamicBuffer {
@@ -50,6 +72,58 @@ private struct DynamicBuffer {
             buffer.contents().copyMemory(from: raw.baseAddress!, byteCount: bytes)
         }
         return buffer
+    }
+}
+
+/// Triple-buffered CPU→GPU rings for one draw layer. The active and background
+/// layers must not share buffers: both are encoded in the same command buffer,
+/// and overwriting a buffer the GPU is still reading would be a hazard.
+private final class SceneBuffers {
+    private var lineBuffer = DynamicBuffer(stride: MemoryLayout<LineVertex>.stride, label: "lines")
+    private var stageLineBuffer = DynamicBuffer(stride: MemoryLayout<LineVertex>.stride, label: "stage lines")
+    private var pointBuffer = DynamicBuffer(stride: MemoryLayout<PointVertex>.stride, label: "points")
+    private var stagePointBuffer = DynamicBuffer(stride: MemoryLayout<PointVertex>.stride, label: "stage points")
+    private var ambientPointBuffer = DynamicBuffer(stride: MemoryLayout<PointVertex>.stride, label: "ambient points")
+    private var spriteBuffer = DynamicBuffer(stride: MemoryLayout<SpriteInstance>.stride, label: "sprites")
+    private var rawBuffer = DynamicBuffer(stride: MemoryLayout<TriangleVertex>.stride, label: "triangles")
+    private var meshBuffers: [DynamicBuffer]
+
+    init(label: String) {
+        lineBuffer.label = label + " lines"
+        stageLineBuffer.label = label + " stage lines"
+        pointBuffer.label = label + " points"
+        stagePointBuffer.label = label + " stage points"
+        ambientPointBuffer.label = label + " ambient points"
+        spriteBuffer.label = label + " sprites"
+        rawBuffer.label = label + " triangles"
+        meshBuffers = (0..<ShapeID.allCases.count).map {
+            DynamicBuffer(stride: MemoryLayout<MeshInstance>.stride, label: "\(label) mesh \($0)")
+        }
+    }
+
+    func lines(_ array: [LineVertex], device: MTLDevice, frame: Int) -> MTLBuffer? {
+        lineBuffer.update(array, device: device, frame: frame)
+    }
+    func stageLines(_ array: [LineVertex], device: MTLDevice, frame: Int) -> MTLBuffer? {
+        stageLineBuffer.update(array, device: device, frame: frame)
+    }
+    func points(_ array: [PointVertex], device: MTLDevice, frame: Int) -> MTLBuffer? {
+        pointBuffer.update(array, device: device, frame: frame)
+    }
+    func stagePoints(_ array: [PointVertex], device: MTLDevice, frame: Int) -> MTLBuffer? {
+        stagePointBuffer.update(array, device: device, frame: frame)
+    }
+    func ambientPoints(_ array: [PointVertex], device: MTLDevice, frame: Int) -> MTLBuffer? {
+        ambientPointBuffer.update(array, device: device, frame: frame)
+    }
+    func sprites(_ array: [SpriteInstance], device: MTLDevice, frame: Int) -> MTLBuffer? {
+        spriteBuffer.update(array, device: device, frame: frame)
+    }
+    func raw(_ array: [TriangleVertex], device: MTLDevice, frame: Int) -> MTLBuffer? {
+        rawBuffer.update(array, device: device, frame: frame)
+    }
+    func mesh(_ array: [MeshInstance], shape: ShapeID, device: MTLDevice, frame: Int) -> MTLBuffer? {
+        meshBuffers[shape.rawValue].update(array, device: device, frame: frame)
     }
 }
 
@@ -99,16 +173,8 @@ final class GlobeRenderer: NSObject, MTKViewDelegate {
     private var depthNoWrite: MTLDepthStencilState!
     private var depthWrite: MTLDepthStencilState!
 
-    private var lineBuffer = DynamicBuffer(stride: MemoryLayout<LineVertex>.stride, label: "lines")
-    private var stageLineBuffer = DynamicBuffer(stride: MemoryLayout<LineVertex>.stride, label: "stage lines")
-    private var pointBuffer = DynamicBuffer(stride: MemoryLayout<PointVertex>.stride, label: "points")
-    private var stagePointBuffer = DynamicBuffer(stride: MemoryLayout<PointVertex>.stride, label: "stage points")
-    private var ambientPointBuffer = DynamicBuffer(stride: MemoryLayout<PointVertex>.stride, label: "ambient points")
-    private var spriteBuffer = DynamicBuffer(stride: MemoryLayout<SpriteInstance>.stride, label: "sprites")
-    private var rawBuffer = DynamicBuffer(stride: MemoryLayout<TriangleVertex>.stride, label: "triangles")
-    private var meshBuffers = (0..<ShapeID.allCases.count).map {
-        DynamicBuffer(stride: MemoryLayout<MeshInstance>.stride, label: "mesh instances \($0)")
-    }
+    private let activeBuffers = SceneBuffers(label: "active")
+    private let backgroundBuffers = SceneBuffers(label: "background")
 
     private var frameIndex = 0
     private var frameDiagnosticCounter = 0
@@ -485,7 +551,7 @@ final class GlobeRenderer: NSObject, MTKViewDelegate {
         camera.aspect = Float(renderSize.width / max(1, renderSize.height))
         let view = camera.viewMatrix
         let forward = camera.forward
-        let right = forward.cross(.up).normalized
+        let right = forward.cross(camera.up).normalized
         let up = right.cross(forward).normalized
         let tanHalf = tan(camera.fov * .pi / 360)
         let pointScale = Float(renderSize.height) / (2 * tanHalf)
@@ -528,11 +594,12 @@ final class GlobeRenderer: NSObject, MTKViewDelegate {
 
     private func encodeScene(state: RenderState, encoder: MTLRenderCommandEncoder,
                              frame: FrameUniforms, renderSize: CGSize) {
-        let draw = state.drawList
-        let skyFrame = fixedSkyFrame(camera: state.camera, stageScale: state.stageScale,
+        let active = state.layers[state.activeLayer]
+        let skyFrame = fixedSkyFrame(camera: state.camera, stageScale: active.stageScale,
                                      elapsed: state.elapsed, backdropYaw: state.backdropYaw,
                                      renderSize: renderSize)
         var frameCopy = frame
+        _ = frameCopy
 
         encoder.setCullMode(.none)
         // Star backdrop (opaque, no depth). This uses the fixed sky frame, so
@@ -545,16 +612,45 @@ final class GlobeRenderer: NSObject, MTKViewDelegate {
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
 
         // Deep-space dust shares that fixed frame. It is additive and drawn
-        // before the instrument sphere, so dragging the globe moves the globe
+        // before the instrument spheres, so dragging the globe moves the globe
         // through the dust instead of dragging the dust with it.
-        if !draw.ambientPoints.isEmpty, let buffer = update(ambientPoints: draw.ambientPoints) {
+        let activeDust = active.drawList.ambientPoints
+        if !activeDust.isEmpty, let buffer = update(ambientPoints: activeDust, buffers: activeBuffers) {
             encoder.setRenderPipelineState(pointPipeline)
             encoder.setVertexBuffer(buffer, offset: 0, index: 0)
             var transform = LineUniforms(transform: Mat4.scale(Vec3(repeating: skyStageScale)))
             encoder.setVertexBytes(&transform, length: MemoryLayout<LineUniforms>.stride, index: 1)
             encoder.setVertexBytes(&skyCopy, length: MemoryLayout<FrameUniforms>.stride, index: 2)
-            encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: draw.ambientPoints.count)
+            encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: activeDust.count)
         }
+
+        // Both globes share one camera, one depth buffer and one set of post
+        // targets. The background layer is rendered through a camera shifted
+        // by its offset, which places its local-origin geometry behind the
+        // focused globe without translating a single vertex.
+        for (index, layer) in state.layers.enumerated() {
+            var camera = state.camera
+            if layer.offset != .zero {
+                camera.position -= layer.offset
+                camera.target -= layer.offset
+            }
+            let layerFrame = frameUniforms(camera: camera, elapsed: state.elapsed,
+                                           stageScale: layer.stageScale,
+                                           backdropYaw: state.backdropYaw,
+                                           renderSize: renderSize, shake: state.shake)
+            encodeLayer(layer: layer, state: state, encoder: encoder, frame: layerFrame,
+                        renderSize: renderSize,
+                        buffers: index == state.activeLayer ? activeBuffers : backgroundBuffers)
+        }
+    }
+
+    private func encodeLayer(layer: RenderLayer, state: RenderState,
+                             encoder: MTLRenderCommandEncoder, frame: FrameUniforms,
+                             renderSize: CGSize, buffers: SceneBuffers) {
+        let draw = layer.drawList
+        var frameCopy = frame
+        _ = state
+        _ = renderSize
 
         // The hollow instrument sphere: warm atmosphere, glass, and the limb.
         encoder.setDepthStencilState(depthNoWrite)
@@ -605,14 +701,14 @@ final class GlobeRenderer: NSObject, MTKViewDelegate {
         // Everything additive from here on.
         encoder.setDepthStencilState(depthNoWrite)
         encoder.setCullMode(.none)
-        if !draw.sprites.isEmpty, let buffer = update(sprites: draw.sprites) {
+        if !draw.sprites.isEmpty, let buffer = update(sprites: draw.sprites, buffers: buffers) {
             encoder.setRenderPipelineState(spritePipeline)
             encoder.setVertexBuffer(buffer, offset: 0, index: 0)
             encoder.setVertexBytes(&frameCopy, length: MemoryLayout<FrameUniforms>.stride, index: 1)
             encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6, instanceCount: draw.sprites.count)
         }
 
-        if !draw.points.isEmpty, let buffer = update(points: draw.points) {
+        if !draw.points.isEmpty, let buffer = update(points: draw.points, buffers: buffers) {
             encoder.setRenderPipelineState(pointPipeline)
             encoder.setVertexBuffer(buffer, offset: 0, index: 0)
             var transform = LineUniforms(transform: matrix_identity_float4x4)
@@ -620,16 +716,16 @@ final class GlobeRenderer: NSObject, MTKViewDelegate {
             encoder.setVertexBytes(&frameCopy, length: MemoryLayout<FrameUniforms>.stride, index: 2)
             encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: draw.points.count)
         }
-        if !draw.stagePoints.isEmpty, let buffer = update(stagePoints: draw.stagePoints) {
+        if !draw.stagePoints.isEmpty, let buffer = update(stagePoints: draw.stagePoints, buffers: buffers) {
             encoder.setRenderPipelineState(pointPipeline)
             encoder.setVertexBuffer(buffer, offset: 0, index: 0)
-            var transform = LineUniforms(transform: Mat4.scale(Vec3(repeating: state.stageScale)))
+            var transform = LineUniforms(transform: Mat4.scale(Vec3(repeating: layer.stageScale)))
             encoder.setVertexBytes(&transform, length: MemoryLayout<LineUniforms>.stride, index: 1)
             encoder.setVertexBytes(&frameCopy, length: MemoryLayout<FrameUniforms>.stride, index: 2)
             encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: draw.stagePoints.count)
         }
 
-        if !draw.lines.isEmpty, let buffer = update(lines: draw.lines) {
+        if !draw.lines.isEmpty, let buffer = update(lines: draw.lines, buffers: buffers) {
             encoder.setRenderPipelineState(linePipeline)
             encoder.setVertexBuffer(buffer, offset: 0, index: 0)
             var transform = LineUniforms(transform: matrix_identity_float4x4)
@@ -637,16 +733,16 @@ final class GlobeRenderer: NSObject, MTKViewDelegate {
             encoder.setVertexBytes(&frameCopy, length: MemoryLayout<FrameUniforms>.stride, index: 2)
             encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: draw.lines.count)
         }
-        if !draw.stageLines.isEmpty, let buffer = update(stageLines: draw.stageLines) {
+        if !draw.stageLines.isEmpty, let buffer = update(stageLines: draw.stageLines, buffers: buffers) {
             encoder.setRenderPipelineState(linePipeline)
             encoder.setVertexBuffer(buffer, offset: 0, index: 0)
-            var transform = LineUniforms(transform: Mat4.scale(Vec3(repeating: state.stageScale)))
+            var transform = LineUniforms(transform: Mat4.scale(Vec3(repeating: layer.stageScale)))
             encoder.setVertexBytes(&transform, length: MemoryLayout<LineUniforms>.stride, index: 1)
             encoder.setVertexBytes(&frameCopy, length: MemoryLayout<FrameUniforms>.stride, index: 2)
             encoder.drawPrimitives(type: .line, vertexStart: 0, vertexCount: draw.stageLines.count)
         }
 
-        if !draw.rawTriangles.isEmpty, let buffer = update(raw: draw.rawTriangles) {
+        if !draw.rawTriangles.isEmpty, let buffer = update(raw: draw.rawTriangles, buffers: buffers) {
             encoder.setRenderPipelineState(rawPipeline)
             encoder.setVertexBuffer(buffer, offset: 0, index: 0)
             var transform = LineUniforms(transform: matrix_identity_float4x4)
@@ -658,7 +754,7 @@ final class GlobeRenderer: NSObject, MTKViewDelegate {
         for shape in ShapeID.allCases {
             let instances = draw.meshBatches[shape.rawValue]
             guard !instances.isEmpty, let mesh = shapes.shapes[shape],
-                  let buffer = update(mesh: instances, shape: shape) else { continue }
+                  let buffer = update(mesh: instances, shape: shape, buffers: buffers) else { continue }
             encoder.setRenderPipelineState(meshPipeline)
             encoder.setCullMode(shape == .sphere || shape == .tetra || shape == .octa || shape == .box || shape == .cone ? .back : .none)
             encoder.setVertexBuffer(buffer, offset: 0, index: 0)
@@ -767,37 +863,37 @@ final class GlobeRenderer: NSObject, MTKViewDelegate {
         }
     }
 
-    // Dynamic buffers are queried through small wrappers so each draw list can
-    // share the triple-buffered ring without dictionary lookups in the hot path.
-    private func update(lines: [LineVertex]) -> MTLBuffer? {
-        lineBuffer.update(lines, device: device, frame: frameIndex)
+    // Per-layer triple-buffered rings. The layer parameter is explicit so the
+    // hot path never branches on the active/background role.
+    private func update(lines: [LineVertex], buffers: SceneBuffers) -> MTLBuffer? {
+        buffers.lines(lines, device: device, frame: frameIndex)
     }
-    private func update(stageLines: [LineVertex]) -> MTLBuffer? {
-        stageLineBuffer.update(stageLines, device: device, frame: frameIndex)
+    private func update(stageLines: [LineVertex], buffers: SceneBuffers) -> MTLBuffer? {
+        buffers.stageLines(stageLines, device: device, frame: frameIndex)
     }
-    private func update(points: [PointVertex]) -> MTLBuffer? {
-        pointBuffer.update(points, device: device, frame: frameIndex)
+    private func update(points: [PointVertex], buffers: SceneBuffers) -> MTLBuffer? {
+        buffers.points(points, device: device, frame: frameIndex)
     }
-    private func update(stagePoints: [PointVertex]) -> MTLBuffer? {
-        stagePointBuffer.update(stagePoints, device: device, frame: frameIndex)
+    private func update(stagePoints: [PointVertex], buffers: SceneBuffers) -> MTLBuffer? {
+        buffers.stagePoints(stagePoints, device: device, frame: frameIndex)
     }
-    private func update(ambientPoints: [PointVertex]) -> MTLBuffer? {
-        ambientPointBuffer.update(ambientPoints, device: device, frame: frameIndex)
+    private func update(ambientPoints: [PointVertex], buffers: SceneBuffers) -> MTLBuffer? {
+        buffers.ambientPoints(ambientPoints, device: device, frame: frameIndex)
     }
-    private func update(sprites: [SpriteInstance]) -> MTLBuffer? {
-        spriteBuffer.update(sprites, device: device, frame: frameIndex)
+    private func update(sprites: [SpriteInstance], buffers: SceneBuffers) -> MTLBuffer? {
+        buffers.sprites(sprites, device: device, frame: frameIndex)
     }
-    private func update(raw: [TriangleVertex]) -> MTLBuffer? {
-        rawBuffer.update(raw, device: device, frame: frameIndex)
+    private func update(raw: [TriangleVertex], buffers: SceneBuffers) -> MTLBuffer? {
+        buffers.raw(raw, device: device, frame: frameIndex)
     }
-    private func update(mesh: [MeshInstance], shape: ShapeID) -> MTLBuffer? {
-        meshBuffers[shape.rawValue].update(mesh, device: device, frame: frameIndex)
+    private func update(mesh: [MeshInstance], shape: ShapeID, buffers: SceneBuffers) -> MTLBuffer? {
+        buffers.mesh(mesh, shape: shape, device: device, frame: frameIndex)
     }
 
     private func makeDofUniforms(state: RenderState, aspect: Float) -> DofUniforms {
         let cam = state.camera
         let forward = cam.forward
-        let right = forward.cross(.up).normalized
+        let right = forward.cross(cam.up).normalized
         let up = right.cross(forward).normalized
         return DofUniforms(
             params: SIMD4(state.dofFocus, state.dofAperture, state.dofMaxBlur, aspect),

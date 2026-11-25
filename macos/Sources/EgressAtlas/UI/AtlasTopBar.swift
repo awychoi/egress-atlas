@@ -11,6 +11,8 @@ struct AtlasTopBar: View {
             HStack(alignment: .top, spacing: 12) {
                 brand
                     .padding(.top, metrics.brandTopInset)
+                panelNav
+                    .padding(.top, metrics.brandTopInset + 4)
                 Spacer(minLength: 12)
                 topRight
                     .background(
@@ -19,9 +21,14 @@ struct AtlasTopBar: View {
                         }
                     )
             }
-            if metrics.showTopCenter && hasRoomForTopCenter {
+            if metrics.showTopCenter && hasRoomForTopCenter && !centersSwitcher {
                 topCenter
                     .padding(.top, 6)
+            }
+            if centersSwitcher {
+                HostGlobeSwitcher(runtime: runtime, metrics: metrics)
+                    .padding(.top, metrics.topPadding)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
         }
         .padding(.top, metrics.topPadding)
@@ -30,26 +37,38 @@ struct AtlasTopBar: View {
         .onPreferenceChange(TopRightWidthKey.self) { topRightWidth = $0 }
     }
 
+    private var centersSwitcher: Bool { metrics.width >= 1180 }
+
     private var brand: some View {
-        BrandLockup(height: metrics.brandLockupHeight)
+        Group {
+            if metrics.tiny {
+                BrandMark(side: metrics.brandLockupHeight)
+            } else {
+                BrandLockup(height: metrics.brandLockupHeight)
+            }
+        }
     }
 
     private var panelNav: some View {
-        HStack(spacing: 2) {
+        let host = runtime.displayedGlobe == .host
+        return HStack(spacing: 2) {
             panelButton(
-                title: "Network",
-                symbol: "list.bullet",
-                count: runtime.network.devices.count,
+                title: host ? "Apps" : "Network",
+                symbol: host ? "square.grid.2x2" : "list.bullet",
+                count: host ? runtime.hostSnapshot.apps.count : runtime.network.devices.count,
                 active: runtime.leftRailOpen,
-                hint: "Toggle the network panel ([)",
+                accent: host ? Palette.host : Palette.gold,
+                hint: host ? "Toggle the host apps panel ([)" : "Toggle the network panel ([)",
                 action: toggleNetwork
             )
             panelButton(
-                title: "Queries",
-                symbol: "waveform.path.ecg",
-                count: runtime.isReplay ? runtime.feed.count : runtime.feedCount,
+                title: host ? "Domains" : "Queries",
+                symbol: host ? "globe" : "waveform.path.ecg",
+                count: host ? runtime.hostSnapshot.domains.count
+                    : (runtime.isReplay ? runtime.feed.count : runtime.feedCount),
                 active: runtime.rightRailOpen,
-                hint: "Toggle the live queries panel (])",
+                accent: host ? Palette.host : Palette.gold,
+                hint: host ? "Toggle the host domains panel (])" : "Toggle the live queries panel (])",
                 action: toggleQueries
             )
         }
@@ -69,6 +88,7 @@ struct AtlasTopBar: View {
         symbol: String,
         count: Int,
         active: Bool,
+        accent: SRGB = Palette.gold,
         hint: String,
         action: @escaping () -> Void
     ) -> some View {
@@ -85,7 +105,7 @@ struct AtlasTopBar: View {
                 if !metrics.tiny {
                     Text(Format.compact(count))
                         .font(.atlasMono(9, .regular))
-                        .foregroundColor(active ? Palette.gold.opacity(0.72) : Palette.dim.color)
+                        .foregroundColor(active ? accent.opacity(0.72) : Palette.dim.color)
                         .padding(.leading, showsPanelLabel ? 5 : 0)
                         .overlay(alignment: .leading) {
                             if showsPanelLabel {
@@ -94,16 +114,16 @@ struct AtlasTopBar: View {
                         }
                 }
             }
-            .foregroundColor(active ? Palette.gold.color : Palette.muted.color)
+            .foregroundColor(active ? accent.color : Palette.muted.color)
             .padding(.horizontal, 7)
             .frame(height: 32)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(active ? Palette.gold.opacity(0.09) : .clear)
+                    .fill(active ? accent.opacity(0.09) : .clear)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(active ? Palette.gold.opacity(0.16) : .clear, lineWidth: 1)
+                    .strokeBorder(active ? accent.opacity(0.16) : .clear, lineWidth: 1)
             )
         }
         .buttonStyle(AtlasPlainButtonStyle())
@@ -131,12 +151,20 @@ struct AtlasTopBar: View {
 
     private var topCenter: some View {
         HStack(spacing: 15) {
-            livePill
+            if runtime.displayedGlobe == .host {
+                hostPill
+            } else {
+                livePill
+            }
             if hasRoomForTopMeta {
                 HStack(spacing: 9) {
-                    Text(runtime.devicePresenceText)
+                    Text(runtime.displayedGlobe == .host
+                         ? "\(Format.compact(runtime.hostSnapshot.apps.count)) apps"
+                         : runtime.devicePresenceText)
                     Circle().fill(Palette.faint.color).frame(width: 2, height: 2)
-                    Text("\(Format.compact(runtime.windowStats.destinations)) destinations")
+                    Text(runtime.displayedGlobe == .host
+                         ? "\(Format.compact(runtime.hostSnapshot.domains.count)) domains"
+                         : "\(Format.compact(runtime.windowStats.destinations)) destinations")
                 }
                 .font(.atlasMono(7, .regular))
                 .tracking(7 * 0.09)
@@ -197,10 +225,38 @@ struct AtlasTopBar: View {
         }
     }
 
+    private var hostPill: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(Palette.host.color)
+                .frame(width: 4, height: 4)
+                .shadow(color: Palette.host.opacity(0.8), radius: 3.5)
+                .opacity(runtime.hostPaused ? 1 : (livePulse ? 1 : 0.32))
+            Text("HOST")
+                .font(.atlasMono(7.5, .regular))
+                .tracking(7.5 * 0.13)
+                .foregroundColor(Palette.host.color)
+            Text(runtime.clock)
+                .font(.atlasMono(7.5, .regular))
+                .tracking(7.5 * 0.06)
+                .foregroundColor(Palette.text2.color)
+                .monospacedDigit()
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 5)
+        .background(Capsule().fill(Color.rgba("081416", 0.35)))
+        .overlay(Capsule().strokeBorder(Palette.host.opacity(0.24), lineWidth: 1))
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { livePulse = true }
+        }
+    }
+
     private var topRight: some View {
         HStack(spacing: metrics.topRightGap) {
-            panelNav
-            topDivider
+            if !centersSwitcher {
+                HostGlobeSwitcher(runtime: runtime, metrics: metrics)
+                topDivider
+            }
             sourceChip
             filterMenu
             topDivider
@@ -220,20 +276,26 @@ struct AtlasTopBar: View {
     }
 
     private var sourceChip: some View {
-        Button {
+        let host = runtime.displayedGlobe == .host
+        let tone = host ? Palette.host : (runtime.isLiveSource ? Palette.signal : Palette.gold)
+        return Button {
             runtime.helpOpen = false
             runtime.filterOpen = false
-            runtime.settingsTab = .source
+            if host {
+                runtime.settingsTab = .host
+            } else {
+                runtime.settingsTab = .source
+            }
             runtime.settingsOpen = true
         } label: {
             HStack(spacing: 6) {
-                Circle().fill((runtime.isLiveSource ? Palette.signal : Palette.gold).color).frame(width: 5, height: 5)
-                    .shadow(color: (runtime.isLiveSource ? Palette.signal : Palette.gold).opacity(0.6), radius: 4)
+                Circle().fill(tone.color).frame(width: 5, height: 5)
+                    .shadow(color: tone.opacity(0.6), radius: 4)
                 if metrics.showSourceLabel {
-                    Text(runtime.isLiveSource ? "PI-HOLE" : "DEMO")
+                    Text(host ? "THIS MAC" : (runtime.isLiveSource ? "PI-HOLE" : "DEMO"))
                         .font(.atlasMono(7, .regular))
                         .tracking(7 * 0.12)
-                        .foregroundColor(Palette.muted.color)
+                        .foregroundColor(host ? Palette.host.color : Palette.muted.color)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
                 }
@@ -250,10 +312,21 @@ struct AtlasTopBar: View {
             )
         }
         .buttonStyle(AtlasPlainButtonStyle())
-        .accessibilityLabel(runtime.isLiveSource ? "Data source: Pi-hole live" : "Data source: demo")
+        .accessibilityLabel(host ? "Data source: this Mac" : (runtime.isLiveSource ? "Data source: Pi-hole live" : "Data source: demo"))
     }
 
+    @ViewBuilder
     private var filterMenu: some View {
+        if runtime.displayedGlobe == .host {
+            if !metrics.tiny {
+                HostScopeCountChip(runtime: runtime, compact: false)
+            }
+        } else {
+            dnsFilterMenu
+        }
+    }
+
+    private var dnsFilterMenu: some View {
         let activeColor: Color = runtime.filter == .blocked ? Palette.coralHot.color : Palette.gold.color
         return Button {
             runtime.helpOpen = false

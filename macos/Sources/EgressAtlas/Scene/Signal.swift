@@ -14,14 +14,18 @@ final class Signal {
     private let trailCount = 34
     private var trailColors: [SIMD3<Float>] = []
 
-    init(controlPoints: [Vec3], duration: Float? = nil, seed: UInt32 = 1, onArrive: (() -> Void)? = nil) {
+    init(controlPoints: [Vec3], duration: Float? = nil, seed: UInt32 = 1,
+         hostTone: Bool = false, hostOutbound: Bool = false,
+         onArrive: (() -> Void)? = nil) {
         curve = CatmullRom(points: controlPoints, closed: false, curveType: "centripetal", tension: 0.5)
         length = curve.length()
         self.duration = duration ?? min(0.9, 0.42 + length * 0.028)
         self.onArrive = onArrive
         rng = RNG(seed)
-        let ice = Palette.signalIce.linear
-        let signal = Palette.signal.linear
+        let ice = (hostTone ? (hostOutbound ? Palette.hostOut : Palette.hostGlow)
+            : Palette.signalIce).linear
+        let signal = (hostTone ? (hostOutbound ? Palette.hostOutHot : Palette.host)
+            : Palette.signal).linear
         let white = Palette.white.linear
         for i in 0..<trailCount {
             let k = Float(i) / Float(trailCount - 1)

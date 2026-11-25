@@ -22,7 +22,9 @@ struct LabelOverlay: View {
                     // boundary.
                     AtlasLabelView(label: label)
                         .equatable()
-                        .position(x: label.anchor.x, y: label.anchor.y - label.size.height / 2 - 10)
+                        .transition(.opacity)
+                        .position(x: clampedX(label, width: geo.size.width),
+                                  y: clampedY(label, height: geo.size.height))
                         .blur(radius: label.blur)
                         .animation(anchorAnimation, value: label.anchor)
                         .transition(.opacity)
@@ -33,6 +35,18 @@ struct LabelOverlay: View {
         }
         .allowsHitTesting(false)
         .animation(.easeOut(duration: 0.34), value: store.labels.map(\.id))
+    }
+
+    private func clampedX(_ label: AtlasLabel, width: CGFloat) -> CGFloat {
+        let half = label.size.width / 2 + 8
+        return min(max(label.anchor.x, half), max(half, width - half))
+    }
+
+    private func clampedY(_ label: AtlasLabel, height: CGFloat) -> CGFloat {
+        let desired = label.anchor.y - label.size.height / 2 - 10
+        let top = label.size.height / 2 + 112
+        let bottom = height - 152
+        return min(max(desired, top), max(top, bottom))
     }
 }
 
@@ -47,12 +61,27 @@ private extension AtlasLabel {
 struct AtlasLabelView: View {
     let label: AtlasLabel
 
+    private var hostAccent: SRGB {
+        label.kind == .device ? Palette.hostApp : Palette.hostRemote
+    }
+
+    private var hostAccentHot: SRGB {
+        label.kind == .device ? Palette.hostAppHot : Palette.hostRemoteHot
+    }
+
     private var accent: Color {
+        if label.isHost {
+            return (label.hovered || label.selected) ? hostAccentHot.color : hostAccent.color
+        }
         if label.kind == .device { return Palette.signal.color }
         return label.blocked ? Palette.coral.color : Palette.gold.color
     }
 
     private var borderColor: Color {
+        if label.isHost {
+            return (label.hovered || label.selected)
+                ? hostAccentHot.opacity(0.62) : hostAccent.opacity(0.32)
+        }
         if label.kind == .device {
             return (label.hovered || label.selected) ? Palette.signalIce.opacity(0.62) : Palette.signal.opacity(0.3)
         }
@@ -63,6 +92,9 @@ struct AtlasLabelView: View {
     }
 
     private var hostColor: Color {
+        if label.isHost {
+            return (label.hovered || label.selected) ? Palette.hostText.color : Palette.hostText2.color
+        }
         if label.kind == .device { return Palette.signalIce.color }
         if label.blocked { return SRGB(hex: "ffe8e0").color }
         return (label.hovered || label.selected) ? Palette.signalIce.color : Palette.text2.color
@@ -72,22 +104,24 @@ struct AtlasLabelView: View {
         VStack(spacing: 3) {
             HStack(spacing: 6) {
                 if label.kind == .device {
+                    let dot = label.isHost ? hostAccent : Palette.signal
                     ZStack {
-                        Circle().strokeBorder(Palette.signal.opacity(0.42), lineWidth: 1)
-                        TinyDot(color: Palette.signal.color, size: 5, glow: 7)
+                        Circle().strokeBorder(dot.opacity(0.42), lineWidth: 1)
+                        TinyDot(color: dot.color, size: 5, glow: 7)
                     }
                     .frame(width: 12, height: 12)
                 } else {
+                    let keyColor = label.isHost ? hostAccent
+                        : (label.blocked ? Palette.coral : Palette.gold)
                     Text(label.key)
                         .font(.atlasMono(5.6, .regular))
                         .tracking(5.6 * 0.06)
-                        .foregroundColor(label.blocked ? Palette.coral.color : Palette.gold.color)
+                        .foregroundColor(keyColor.color)
                         .padding(.horizontal, 3)
                         .frame(minWidth: 16, minHeight: 13)
                         .overlay(
                             RoundedRectangle(cornerRadius: 2)
-                                .strokeBorder(label.blocked ? Palette.coral.opacity(0.55) : Palette.gold.opacity(0.34),
-                                              lineWidth: 1)
+                                .strokeBorder(keyColor.opacity(0.4), lineWidth: 1)
                         )
                 }
 
@@ -96,20 +130,21 @@ struct AtlasLabelView: View {
                     .tracking(8.2 * 0.012)
                     .foregroundColor(hostColor)
                     .lineLimit(1)
-                    .fixedSize()
+                    .truncationMode(.middle)
 
                 if let badge = label.badge {
+                    let badgeColor = label.isHost ? hostAccent
+                        : (label.blocked ? Palette.coral : Palette.signal)
                     Text(badge.uppercased())
                         .font(.atlasMono(5.4, .regular))
                         .tracking(5.4 * 0.12)
-                        .foregroundColor(label.blocked ? Palette.coral.color : Palette.signal.color)
+                        .foregroundColor(badgeColor.color)
                         .padding(.horizontal, 3)
                         .padding(.vertical, 2)
-                        .background(label.blocked ? Palette.coral.opacity(0.08) : Color.clear)
+                        .background(badgeColor.opacity(0.08))
                         .overlay(
                             RoundedRectangle(cornerRadius: 2)
-                                .strokeBorder(label.blocked ? Palette.coral.opacity(0.42) : Palette.signal.opacity(0.3),
-                                              lineWidth: 1)
+                                .strokeBorder(badgeColor.opacity(0.36), lineWidth: 1)
                         )
                 }
             }
@@ -118,7 +153,7 @@ struct AtlasLabelView: View {
             .padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .fill(Color.rgba("0c0704", 0.82))
+                    .fill(label.isHost ? Color.rgba("050d11", 0.88) : Color.rgba("0c0704", 0.82))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
@@ -131,17 +166,20 @@ struct AtlasLabelView: View {
                 Text(label.meta.uppercased())
                     .font(.atlasMono(6.2, .regular))
                     .tracking(6.2 * 0.08)
-                    .foregroundColor(label.blocked ? Color.rgba("e08068", 0.75)
-                                     : (label.kind == .device ? Color.rgba("45b8e8", 0.7)
-                                        : Color.rgba("8fbea0", 0.8)))
+                    .foregroundColor(label.isHost ? Palette.hostMuted.color
+                                     : (label.blocked ? Color.rgba("e08068", 0.75)
+                                        : (label.kind == .device ? Color.rgba("45b8e8", 0.7)
+                                           : Color.rgba("8fbea0", 0.8))))
                 Circle().fill(Palette.faint.color).frame(width: 2, height: 2)
                 Text(label.detail)
                     .font(.atlasMono(6.2, .regular))
                     .tracking(6.2 * 0.08)
-                    .foregroundColor(Palette.dim.color)
+                    .foregroundColor(label.isHost ? Palette.hostMeta.color : Palette.dim.color)
                     .lineLimit(1)
-                    .fixedSize()
+                    .truncationMode(.middle)
             }
+            .frame(width: max(40, label.size.width - 14), alignment: .leading)
+            .clipped()
 
             Rectangle()
                 .fill(

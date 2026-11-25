@@ -5,6 +5,14 @@ struct AtlasRails: View {
     let metrics: Metrics
 
     var body: some View {
+        if runtime.displayedGlobe == .host {
+            HostRails(runtime: runtime, metrics: metrics)
+        } else {
+            dnsBody
+        }
+    }
+
+    private var dnsBody: some View {
         GeometryReader { geo in
             ZStack(alignment: .topLeading) {
                 // Left network rail.

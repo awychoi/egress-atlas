@@ -39,4 +39,10 @@ brand-identity/
 # Local logs
 *.log
 
+
+
+
+# Local planning and assessment notes (not shipped docs)
+/planning/
+
 /AGENTS.md
