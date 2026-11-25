@@ -18,9 +18,9 @@ The history window runs from one hour to seven days and follows each body's `las
 
 ## Runtime and rendering
 
-`main.swift` provides four headless modes: `--snapshot`, `--self-test`, `--live-test` and `--make-icon`. Otherwise it starts the AppKit app: a full-size-content `NSWindow` with SwiftUI chrome over a full-window `MTKView`.
+`main.swift` provides five headless modes: `--snapshot`, `--self-test`, `--host-test`, `--live-test` and `--make-icon`. Otherwise it starts the AppKit app: a full-size-content `NSWindow` with SwiftUI chrome over a full-window `MTKView`.
 
-`AtlasRuntime` owns the network, source, selection, overlays, camera, replay archive and playback state. The view's display link advances the runtime and calls `MTKView.draw()` directly. `ATLAS_CLOCK=timer|async` selects fallback clocks for measurement. The direct draw avoids an extra AppKit display pass that used to cap presentation near 24 fps.
+`AtlasRuntime` owns the network, source, selection, overlays, camera, replay archive, playback state and the published HOST state; `HostInstrument` owns socket sampling, domain attribution and the dnsmasq stream. The view's display link advances the runtime and calls `MTKView.draw()` directly. `ATLAS_CLOCK=timer|async` selects fallback clocks for measurement. The direct draw avoids an extra AppKit display pass that used to cap presentation near 24 fps.
 
 The renderer uses a linear HDR `rgba16Float` scene with 4× MSAA, double-buffered post targets and a final `bgra8Unorm` pass. Depth of field derives from the globe's front intersection, so it needs no second scene pass; the focus ray is reconstructed through the same lens shift as the scene projection, so panning the globe does not push it into the far blur. Bloom runs a five-mip chain capped at 960×540 device pixels. ACES tone mapping and sRGB transfer are followed by vignette and grain, and render scale is capped at 1.75×.
 
@@ -104,13 +104,14 @@ At launch the app sets `NSApplication.applicationIconImage`, so the Dock, app sw
 cd macos
 swift build
 .build/debug/EgressAtlas --self-test
+.build/debug/EgressAtlas --host-test --brief
 
 .build/debug/EgressAtlas --snapshot --ui --rails \
   --width 1600 --height 1000 --scale 1.5 \
   --out ../docs/assets/screenshots/egress-atlas.png
 ```
 
-`--self-test` checks the demo model, picking, effects, focus, right-drag panning, alias display, windows and the Metal renderer; a pass ends with `metal renderer OK`. `--snapshot` writes a deterministic still without screen-capture permission. `--live-test --url http://127.0.0.1:8080 --password testpass` runs the client against a local mock; `testpass` is a fixture.
+`--self-test` checks the demo model, picking, effects, focus, right-drag panning, alias display, windows, HOST and the Metal renderer; a pass ends with `metal renderer OK`. `--host-test` runs the HOST parser, scope, attributor, dnsmasq, nettop and synthetic-monitor checks and prints `host-test OK`; `--brief` keeps only that line, while `--out FILE` writes the full log. `--snapshot` writes a deterministic still without screen-capture permission; with `--ui`, `--host-globe` frames the HOST globe and `--deck <0..1>` sets the DNS/HOST deck transition. `--live-test --url http://127.0.0.1:8080 --password testpass` runs the client against a local mock; `testpass` is a fixture.
 
 For pacing, run with `ATLAS_DIAGNOSTICS=1 ATLAS_LOG=/tmp/atlas.log` and grep for `pacing mode` and `present fps`. `ATLAS_LABELS=all` forces the dense label path.
 

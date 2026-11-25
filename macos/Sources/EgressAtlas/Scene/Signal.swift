@@ -1,6 +1,31 @@
 import Foundation
 import simd
 
+/// Colour treatment for a comet. DNS keeps the ice/cyan pair; the HOST globe
+/// distinguishes traffic direction with its inbound and outbound pairs. The
+/// head glow itself is shared by every style.
+enum SignalStyle {
+    case dns
+    case hostInbound
+    case hostOutbound
+
+    var ice: SRGB {
+        switch self {
+        case .dns: return Palette.signalIce
+        case .hostInbound: return Palette.hostGlow
+        case .hostOutbound: return Palette.hostOut
+        }
+    }
+
+    var signal: SRGB {
+        switch self {
+        case .dns: return Palette.signal
+        case .hostInbound: return Palette.host
+        case .hostOutbound: return Palette.hostOutHot
+        }
+    }
+}
+
 /// Port of app/src/lab/Signal.js: a white-hot comet with a 34-point tapered
 /// trail that lives inside the moving signal group.
 final class Signal {
@@ -15,17 +40,15 @@ final class Signal {
     private var trailColors: [SIMD3<Float>] = []
 
     init(controlPoints: [Vec3], duration: Float? = nil, seed: UInt32 = 1,
-         hostTone: Bool = false, hostOutbound: Bool = false,
+         style: SignalStyle = .dns,
          onArrive: (() -> Void)? = nil) {
         curve = CatmullRom(points: controlPoints, closed: false, curveType: "centripetal", tension: 0.5)
         length = curve.length()
         self.duration = duration ?? min(0.9, 0.42 + length * 0.028)
         self.onArrive = onArrive
         rng = RNG(seed)
-        let ice = (hostTone ? (hostOutbound ? Palette.hostOut : Palette.hostGlow)
-            : Palette.signalIce).linear
-        let signal = (hostTone ? (hostOutbound ? Palette.hostOutHot : Palette.host)
-            : Palette.signal).linear
+        let ice = style.ice.linear
+        let signal = style.signal.linear
         let white = Palette.white.linear
         for i in 0..<trailCount {
             let k = Float(i) / Float(trailCount - 1)

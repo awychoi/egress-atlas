@@ -65,6 +65,8 @@ Enable the repository's Git hooks once per clone:
 
 The pre-commit hook scans staged changes for secrets with [gitleaks](https://github.com/gitleaks/gitleaks) and refuses to commit unscanned if gitleaks is unavailable. Install it with `brew install gitleaks`. Because the hook is wired through `core.hooksPath`, it runs for commits made from Xcode, VS Code, or another Git client too, and it searches Homebrew's install locations itself so those clients do not need your shell's `PATH`. For a verified false positive, `git commit --no-verify` bypasses it.
 
+From `macos/`, `.build/debug/EgressAtlas --self-test` exercises the runtime and HOST checks; `--host-test --brief` runs the HOST checks alone, and `--snapshot --ui --host-globe` renders the HOST globe.
+
 ## License
 
 Egress Atlas. Copyright © 2026 wychoi.

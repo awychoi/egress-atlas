@@ -4,9 +4,8 @@ import Foundation
 /// live monitor is attached. It exercises every confidence level and both
 /// directions so the host globe and chrome can be reviewed without the network.
 enum HostDemo {
-    static func snapshot(seed: Int = 0x48a17) -> HostSnapshot {
+    static func snapshot() -> HostSnapshot {
         let now = Date()
-        var rng = RNG(seed)
         let apps: [(String, String, Bool)] = [
             ("app:com.brave.Browser", "Brave Browser", false),
             ("svc:/usr/libexec/apsd", "Apple Push", true),
@@ -35,71 +34,29 @@ enum HostDemo {
             let selected = domains.enumerated().filter { ($0.offset + index) % 3 == 0 }.prefix(4)
             var appEndpoints: [HostEndpointStat] = []
             for (dIndex, domain) in selected {
-                let rx = domain.3 * scale
-                let tx = domain.4 * scale
-                let endpoint = HostEndpointStat(
-                    id: "\(app.0)|tcp4|\(domain.0)|443",
-                    appID: app.0,
-                    remoteHost: domain.0.contains(":") ? domain.0.components(separatedBy: ":").first ?? domain.0 : "104.18.\(index).\(dIndex)",
-                    remotePort: 443,
-                    proto: "tcp4",
-                    service: domain.1,
-                    scope: .internet,
-                    domain: domain.0.contains(":") ? nil : domain.0,
-                    confidence: domain.2,
-                    rxPerSecond: rx,
-                    txPerSecond: tx,
-                    rxTotal: UInt64(rx * 30),
-                    txTotal: UInt64(tx * 30),
-                    socketCount: 1 + (index % 3),
-                    lastSeen: now
-                )
+                let endpoint = makeEndpointStat(appID: app.0, domain: domain,
+                                                index: index, dIndex: dIndex,
+                                                scale: scale, now: now)
                 appEndpoints.append(endpoint)
                 endpoints.append(endpoint)
-                var domainStat = domainStats.first { $0.id == "d:\(domain.0)" }
-                if domainStat == nil {
-                    domainStat = HostDomainStat(
-                        id: "d:\(domain.0)", name: domain.0,
-                        isDomain: !domain.0.contains(":"), scope: .internet,
-                        confidence: domain.2, service: domain.1,
-                        rxPerSecond: 0, txPerSecond: 0, rxTotal: 0, txTotal: 0,
-                        appIDs: [], endpointIDs: [], lastSeen: now
-                    )
-                }
-                if var d = domainStat {
-                    d = HostDomainStat(
-                        id: d.id, name: d.name, isDomain: d.isDomain, scope: d.scope,
-                        confidence: d.confidence, service: d.service,
-                        rxPerSecond: d.rxPerSecond + rx, txPerSecond: d.txPerSecond + tx,
-                        rxTotal: d.rxTotal + UInt64(rx * 30), txTotal: d.txTotal + UInt64(tx * 30),
-                        appIDs: d.appIDs.union([app.0]), endpointIDs: d.endpointIDs.union([endpoint.id]),
-                        lastSeen: now
-                    )
-                    domainStats.removeAll { $0.id == d.id }
-                    domainStats.append(d)
-                }
+                let domainID = "d:\(domain.0)"
+                let existing = domainStats.first { $0.id == domainID }
+                domainStats.removeAll { $0.id == domainID }
+                domainStats.append(makeDomainStat(existing: existing, domain: domain,
+                                                  endpoint: endpoint, appID: app.0, now: now))
             }
-            let rx = appEndpoints.reduce(0) { $0 + $1.rxPerSecond }
-            let tx = appEndpoints.reduce(0) { $0 + $1.txPerSecond }
-            appStats.append(HostAppStat(
-                id: app.0, name: app.1, detail: app.2 ? "system service" : app.0,
-                path: "", isSystem: app.2, icon: nil,
-                pids: [1000 + index], rxPerSecond: rx, txPerSecond: tx,
-                rxTotal: UInt64(rx * 30), txTotal: UInt64(tx * 30),
-                socketCount: appEndpoints.reduce(0) { $0 + $1.socketCount },
-                endpoints: appEndpoints
-            ))
+            appStats.append(makeAppStat(app: app, index: index, endpoints: appEndpoints))
         }
         appStats.sort { $0.totalPerSecond > $1.totalPerSecond }
         domainStats.sort { $0.totalPerSecond > $1.totalPerSecond }
         endpoints.sort { $0.rxPerSecond + $0.txPerSecond > $1.rxPerSecond + $1.txPerSecond }
         var transfers: [HostTransfer] = []
         for (index, domain) in domainStats.prefix(6).enumerated() {
-            let app = domain.appIDs.first ?? apps[0].0
+            let app = domain.appIDs.sorted().first ?? apps[0].0
             let outbound = index % 3 == 2
             transfers.append(HostTransfer(
                 id: "demo-t-\(index)", appID: app, domainID: domain.id,
-                endpointID: domain.endpointIDs.first ?? "",
+                endpointID: domain.endpointIDs.sorted().first ?? "",
                 domain: domain.name, service: domain.service,
                 bytesIn: UInt64(outbound ? 9_000 + index * 2_000 : 120_000 + index * 24_000),
                 bytesOut: UInt64(outbound ? 240_000 + index * 30_000 : 8_000 + index * 3_000),
@@ -120,6 +77,69 @@ enum HostDemo {
             sessionRx: UInt64(totalRx * 120), sessionTx: UInt64(totalTx * 120),
             available: true, note: nil,
             enabledScopes: [.internet, .lan, .vpn]
+        )
+    }
+
+    private static func makeEndpointStat(
+        appID: String,
+        domain: (String, String, HostDomainConfidence, Double, Double),
+        index: Int,
+        dIndex: Int,
+        scale: Double,
+        now: Date
+    ) -> HostEndpointStat {
+        let rx = domain.3 * scale
+        let tx = domain.4 * scale
+        return HostEndpointStat(
+            id: "\(appID)|tcp4|\(domain.0)|443",
+            appID: appID,
+            remoteHost: domain.0.contains(":") ? domain.0.components(separatedBy: ":").first ?? domain.0 : "104.18.\(index).\(dIndex)",
+            remotePort: 443,
+            proto: "tcp4",
+            service: domain.1,
+            scope: .internet,
+            domain: domain.0.contains(":") ? nil : domain.0,
+            confidence: domain.2,
+            rxPerSecond: rx,
+            txPerSecond: tx,
+            rxTotal: UInt64(rx * 30),
+            txTotal: UInt64(tx * 30),
+            socketCount: 1 + (index % 3),
+            lastSeen: now
+        )
+    }
+
+    private static func makeDomainStat(
+        existing: HostDomainStat?,
+        domain: (String, String, HostDomainConfidence, Double, Double),
+        endpoint: HostEndpointStat,
+        appID: String,
+        now: Date
+    ) -> HostDomainStat {
+        return HostDomainStat(
+            id: "d:\(domain.0)", name: domain.0, isDomain: !domain.0.contains(":"),
+            scope: .internet, confidence: domain.2, service: domain.1,
+            rxPerSecond: (existing?.rxPerSecond ?? 0) + endpoint.rxPerSecond,
+            txPerSecond: (existing?.txPerSecond ?? 0) + endpoint.txPerSecond,
+            rxTotal: (existing?.rxTotal ?? 0) + endpoint.rxTotal,
+            txTotal: (existing?.txTotal ?? 0) + endpoint.txTotal,
+            appIDs: (existing?.appIDs ?? []).union([appID]),
+            endpointIDs: (existing?.endpointIDs ?? []).union([endpoint.id]),
+            lastSeen: now
+        )
+    }
+
+    private static func makeAppStat(app: (String, String, Bool), index: Int,
+                                    endpoints: [HostEndpointStat]) -> HostAppStat {
+        let rx = endpoints.reduce(0) { $0 + $1.rxPerSecond }
+        let tx = endpoints.reduce(0) { $0 + $1.txPerSecond }
+        return HostAppStat(
+            id: app.0, name: app.1, detail: app.2 ? "system service" : app.0,
+            path: "", isSystem: app.2,
+            pids: [1000 + index], rxPerSecond: rx, txPerSecond: tx,
+            rxTotal: UInt64(rx * 30), txTotal: UInt64(tx * 30),
+            socketCount: endpoints.reduce(0) { $0 + $1.socketCount },
+            endpoints: endpoints
         )
     }
 }

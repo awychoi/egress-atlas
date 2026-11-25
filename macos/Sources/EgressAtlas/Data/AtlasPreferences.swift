@@ -103,12 +103,16 @@ enum AtlasPreferences {
         set { setOptionalBool(newValue, forKey: showAliasWithAddressKey) }
     }
 
-    /// "host" or "dns"; restores the last focused globe on launch.
-    static var activeGlobe: String? {
-        get { defaults.string(forKey: activeGlobeKey) }
+    /// Last focused globe; restores on launch. Unknown stored values are
+    /// ignored; the runtime falls back to DNS.
+    static var activeGlobe: GlobeKind? {
+        get {
+            guard let raw = defaults.string(forKey: activeGlobeKey) else { return nil }
+            return GlobeKind(rawValue: raw)
+        }
         set {
             guard persists, let newValue else { return }
-            defaults.set(newValue, forKey: activeGlobeKey)
+            defaults.set(newValue.rawValue, forKey: activeGlobeKey)
         }
     }
 

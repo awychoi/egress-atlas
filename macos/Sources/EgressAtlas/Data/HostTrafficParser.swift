@@ -14,11 +14,6 @@ struct HostSocketSample: Equatable {
     let pid: Int
     let rxBytes: UInt64        // cumulative for this socket
     let txBytes: UInt64
-
-    var isLoopback: Bool {
-        let host = remoteAddress
-        return host.hasPrefix("127.") || host == "::1" || host == "localhost"
-    }
 }
 
 enum HostTrafficParser {

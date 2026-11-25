@@ -36,7 +36,7 @@ final class HostGlobeScene {
     var selection: HostSelection?
     var hover: HostSelection?
 
-    private var signals: [HostSignalView] = []
+    private var signals: [Signal] = []
     private var bursts: [HostBurst] = []
     private var wireSignalCounts: [String: Int] = [:]
     private var elapsed: Float = 0
@@ -48,8 +48,6 @@ final class HostGlobeScene {
     private var detail: Float = 1
     private var isActive = true
     private var lastSnapshotDate = Date.distantPast
-    private var appOrder: [String] = []
-    private var domainOrder: [String] = []
 
     static let maxApps = 7
     static let maxDomains = 14
@@ -87,14 +85,6 @@ final class HostGlobeScene {
         let opacity: Float
     }
 
-    private struct HostSignalView {
-        let signal: Signal
-        let wireID: String
-        let appID: String
-        let domainID: String
-        let ingress: Bool
-    }
-
     // MARK: lifecycle
 
     func reset() {
@@ -106,8 +96,6 @@ final class HostGlobeScene {
         wireSignalCounts.removeAll()
         labels.removeAll()
         appSlot.removeAll()
-        appOrder.removeAll()
-        domainOrder.removeAll()
         nextSlot = 0
         layoutDirty = true
         draw.reset()
@@ -153,12 +141,14 @@ final class HostGlobeScene {
 
         let apps = snapshot.apps.sorted {
             if $0.totalPerSecond != $1.totalPerSecond { return $0.totalPerSecond > $1.totalPerSecond }
-            return $0.rxTotal + $0.txTotal > $1.rxTotal + $1.txTotal
+            if $0.rxTotal + $0.txTotal != $1.rxTotal + $1.txTotal {
+                return $0.rxTotal + $0.txTotal > $1.rxTotal + $1.txTotal
+            }
+            return $0.id < $1.id
         }
         let topApps = Array(apps.prefix(Self.maxApps))
         var appIDs = Set(topApps.map(\.id))
         if let selected = selection?.appID { appIDs.insert(selected) }
-        appOrder = apps.filter { appIDs.contains($0.id) }.map(\.id)
 
         for stat in apps where appIDs.contains(stat.id) {
             if var node = appNodes[stat.id] {
@@ -185,12 +175,14 @@ final class HostGlobeScene {
 
         let domains = snapshot.domains.sorted {
             if $0.totalPerSecond != $1.totalPerSecond { return $0.totalPerSecond > $1.totalPerSecond }
-            return $0.rxTotal + $0.txTotal > $1.rxTotal + $1.txTotal
+            if $0.rxTotal + $0.txTotal != $1.rxTotal + $1.txTotal {
+                return $0.rxTotal + $0.txTotal > $1.rxTotal + $1.txTotal
+            }
+            return $0.id < $1.id
         }
         let topDomains = Array(domains.prefix(Self.maxDomains))
         var domainIDs = Set(topDomains.map(\.id))
         if let selected = selection?.domainID { domainIDs.insert(selected) }
-        domainOrder = domains.filter { domainIDs.contains($0.id) }.map(\.id)
 
         for stat in domains where domainIDs.contains(stat.id) {
             if var node = domainNodes[stat.id] {
@@ -332,7 +324,6 @@ final class HostGlobeScene {
         view.bodyHot = Palette.hostAppHot
         view.deviceRef = device
         view.setWindowVisible(true, animated: true, style: .bloom)
-        view.windowPresence = 0
         return AppNode(device: device, view: view, stat: stat, normal: normal,
                        presence: 0, targetPresence: 1, lastSeen: date)
     }
@@ -378,23 +369,24 @@ final class HostGlobeScene {
     private func relayout() {
         layoutDirty = false
         // Apps sit on fixed Fibonacci slots so adding one does not reshuffle
-        // the whole shell.
-        for (id, var node) in appNodes {
+        // the whole shell. Sorted keys keep the pass identical run to run.
+        for id in appNodes.keys.sorted() {
+            guard let node = appNodes[id] else { continue }
             let slot = appSlot[id] ?? 0
             let y = 1 - (Float(slot) + 0.5) * 2 / Float(Self.appSlots)
             let ring = sqrt(max(0, 1 - y * y))
             let angle = Float(slot) * Self.golden
             let normal = Vec3(cos(angle) * ring, y, sin(angle) * ring).normalized
             node.view.setSurfacePosition(normal * 6, normal)
-            appNodes[id] = node
         }
 
         var positions: [String: Vec3] = [:]
-        for (id, node) in domainNodes {
+        for id in domainNodes.keys.sorted() {
+            guard let node = domainNodes[id] else { continue }
             let seed = stableSeed(id)
             let angle = Float(seed % 997) / 997 * TAU
             var centroid = Vec3.zero
-            for appID in node.appIDs {
+            for appID in node.appIDs.sorted() {
                 guard let app = appNodes[appID] else { continue }
                 let w = Float(max(1, app.stat.rxTotal + app.stat.txTotal))
                 centroid += app.normal * w
@@ -417,14 +409,21 @@ final class HostGlobeScene {
 
         // Light relaxation so the inside constellation reads as a field, not
         // a pile. The population is capped, so this is cheap and only runs on
-        // a graph change.
-        let ids = Array(positions.keys)
+        // a graph change. The ordered local field keeps the pairwise passes
+        // deterministic; dictionary key order is not stable across runs.
+        let ids = positions.keys.sorted()
         if ids.count > 1 {
+            var field: [(id: String, position: Vec3)] = []
+            field.reserveCapacity(ids.count)
+            for id in ids {
+                guard let position = positions[id] else { continue }
+                field.append((id: id, position: position))
+            }
             for _ in 0..<28 {
-                for i in 0..<ids.count {
-                    for j in (i + 1)..<ids.count {
-                        var a = positions[ids[i]]!
-                        var b = positions[ids[j]]!
+                for i in 0..<field.count {
+                    for j in (i + 1)..<field.count {
+                        var a = field[i].position
+                        var b = field[j].position
                         var delta = a - b
                         let distance = max(0.0001, delta.length)
                         if distance < 1.82 {
@@ -432,25 +431,28 @@ final class HostGlobeScene {
                             delta = delta.normalized
                             a += delta * push
                             b -= delta * push
-                            positions[ids[i]] = a
-                            positions[ids[j]] = b
+                            field[i].position = a
+                            field[j].position = b
                         }
                     }
                 }
-                for id in ids {
-                    positions[id] = positions[id]!.withLength(min(4.85, max(1.7, positions[id]!.length)))
+                for i in field.indices {
+                    field[i].position = field[i].position.withLength(
+                        min(4.85, max(1.7, field[i].position.length)))
                 }
             }
+            for entry in field {
+                positions[entry.id] = entry.position
+            }
         }
-        for (id, var node) in domainNodes {
-            guard let position = positions[id] else { continue }
+        for id in domainNodes.keys.sorted() {
+            guard let node = domainNodes[id], let position = positions[id] else { continue }
             node.view.setBasePosition(position)
             node.destination.position = position
             node.destination.direction = position.normalized
             node.destination.radius = position.length
             node.destination.homeDirection = position.normalized
             node.destination.radialFraction = position.length / 6
-            domainNodes[id] = node
         }
         rebuildWirePaths()
     }
@@ -461,7 +463,10 @@ final class HostGlobeScene {
             let apps = node.appIDs.compactMap { appID -> (String, HostAppNodeStat)? in
                 guard let app = appNodes[appID] else { return nil }
                 return (appID, HostAppNodeStat(total: app.stat.rxTotal + app.stat.txTotal))
-            }.sorted { $0.1.total > $1.1.total }
+            }.sorted {
+                if $0.1.total != $1.1.total { return $0.1.total > $1.1.total }
+                return $0.0 < $1.0
+            }
             for (appID, _) in apps.prefix(3) {
                 wanted["\(appID)|\(domainID)"] = (appID, domainID)
             }
@@ -470,7 +475,10 @@ final class HostGlobeScene {
             wire.setVisible(false)
             wires.removeValue(forKey: key)
         }
-        for (key, pair) in wanted where wires[key] == nil {
+        // Creating in key order keeps the seeded per-wire offsets stable;
+        // dictionary order would reshuffle them every launch.
+        for key in wanted.keys.sorted() {
+            guard wires[key] == nil, let pair = wanted[key] else { continue }
             guard let app = appNodes[pair.appID], let node = domainNodes[pair.domainID] else { continue }
             let wire = WireView(offset: rng.next(), tone: .allowed)
             wire.edgeId = key
@@ -548,28 +556,41 @@ final class HostGlobeScene {
         drawBursts(visibility: max(0.22, detail))
         let domainLimit = Int(Float(64) + Float(Self.maxDomains - 64) * smoothstep(0.30, 0.90, detail))
         let domains = domainNodes.values
-            .sorted { $0.stat.totalPerSecond > $1.stat.totalPerSecond }
+            .sorted {
+                if $0.stat.totalPerSecond != $1.stat.totalPerSecond {
+                    return $0.stat.totalPerSecond > $1.stat.totalPerSecond
+                }
+                return $0.stat.id < $1.stat.id
+            }
             .prefix(domainLimit)
         for node in domains {
             guard node.presence > 0.004 else { continue }
             node.view.appendDraw(draw, elapsed: elapsed, camera: currentCamera, detail: detail)
         }
         let appLimit = Int(Float(20) + Float(Self.maxApps - 20) * smoothstep(0.30, 0.90, detail))
-        for node in appNodes.values.sorted(by: { $0.stat.totalPerSecond > $1.stat.totalPerSecond }).prefix(appLimit) {
+        let apps = appNodes.values
+            .sorted {
+                if $0.stat.totalPerSecond != $1.stat.totalPerSecond {
+                    return $0.stat.totalPerSecond > $1.stat.totalPerSecond
+                }
+                return $0.stat.id < $1.stat.id
+            }
+            .prefix(appLimit)
+        for node in apps {
             guard node.presence > 0.004 else { continue }
             node.view.appendDraw(draw, elapsed: elapsed, detail: detail)
         }
         let wireLimit = Int(Float(48) + 48 * smoothstep(0.30, 0.90, detail))
         // Host wires point at host NodeViews, which intentionally have no DNS
         // Destination. Never ask a host node for DNS stats (that reference is
-        // unowned and nil here). The dictionary is already stable enough for
-        // a capped background wire budget.
-        for wire in wires.values.prefix(wireLimit) {
-            wire.appendDraw(draw, elapsed: elapsed, detail: detail)
+        // unowned and nil here). Sorted keys keep the additive line batch in
+        // the same order every launch.
+        for key in wires.keys.sorted().prefix(wireLimit) {
+            wires[key]?.appendDraw(draw, elapsed: elapsed, detail: detail)
         }
         if detail > 0.4 {
-            for view in signals {
-                view.signal.appendDraw(draw, elapsed: elapsed)
+            for signal in signals {
+                signal.appendDraw(draw, elapsed: elapsed)
             }
         }
     }
@@ -581,31 +602,35 @@ final class HostGlobeScene {
     private func emit(_ transfers: [HostTransfer]) {
         guard !transfers.isEmpty else { return }
         let candidates = transfers
-            .sorted { $0.bytesIn + $0.bytesOut > $1.bytesIn + $1.bytesOut }
+            .sorted {
+                if $0.bytesIn + $0.bytesOut != $1.bytesIn + $1.bytesOut {
+                    return $0.bytesIn + $0.bytesOut > $1.bytesIn + $1.bytesOut
+                }
+                return $0.id < $1.id
+            }
             .prefix(10)
         for transfer in candidates {
             guard signals.count < Self.maxSignals else { break }
             let domainKey = transfer.domainID
             guard domainNodes[domainKey] != nil else { continue }
             let wireKey = "\(transfer.appID)|\(transfer.domainID)"
-            guard let wire = wires[wireKey], let control = wire.controlPoints as [Vec3]?,
-                  control.count >= 2, let app = appNodes[transfer.appID] else { continue }
+            guard let wire = wires[wireKey], wire.controlPoints.count >= 2,
+                  appNodes[transfer.appID] != nil else { continue }
+            let control = wire.controlPoints
             let ingress = transfer.bytesIn > transfer.bytesOut
-            let points = ingress ? control.reversed() : control
+            let points = ingress ? Array(control.reversed()) : control
             let length = CatmullRom(points: points).length()
             let duration = max(0.35, min(1.1, 0.4 + length * 0.035))
-            let wireKeyForSignal = wireKey
             let appID = transfer.appID
-            let domainID = transfer.domainID
             let targetNodeID = domainKey
             let signal = Signal(controlPoints: points, duration: duration,
                                 seed: UInt32(truncatingIfNeeded: Int(elapsed * 1000) ^ points.count),
-                                hostTone: true, hostOutbound: !ingress) { [weak self] in
+                                style: ingress ? .hostInbound : .hostOutbound) { [weak self] in
                 guard let self else { return }
-                let next = max(0, (self.wireSignalCounts[wireKeyForSignal] ?? 1) - 1)
-                if next == 0 { self.wireSignalCounts.removeValue(forKey: wireKeyForSignal) }
-                else { self.wireSignalCounts[wireKeyForSignal] = next }
-                self.wires[wireKeyForSignal]?.setSignalActive(next > 0)
+                let next = max(0, (self.wireSignalCounts[wireKey] ?? 1) - 1)
+                if next == 0 { self.wireSignalCounts.removeValue(forKey: wireKey) }
+                else { self.wireSignalCounts[wireKey] = next }
+                self.wires[wireKey]?.setSignalActive(next > 0)
                 if ingress {
                     if let app = self.appNodes[appID] {
                         app.view.onFire()
@@ -619,36 +644,21 @@ final class HostGlobeScene {
                                         accent: Palette.hostOut, size: 0.52, duration: 0.5)
                     }
                 }
-                _ = domainID
             }
             wireSignalCounts[wireKey, default: 0] += 1
             wire.setSignalActive(true)
-            signals.append(HostSignalView(signal: signal, wireID: wireKey,
-                                          appID: appID, domainID: domainID,
-                                          ingress: ingress))
+            signals.append(signal)
         }
     }
 
     private func updateSignals(_ dt: Float) {
-        signals.removeAll { view in
-            !view.signal.update(dt: dt)
-        }
-    }
-
-    private var lastCamera = Camera()
-    var cameraForDraw: Camera {
-        get { currentCamera }
-        set {
-            currentCamera = newValue
-            lastCamera = newValue
-        }
+        signals.removeAll { !$0.update(dt: dt) }
     }
 
     // MARK: picking and labels
 
     func setCamera(_ camera: Camera) {
         currentCamera = camera
-        lastCamera = camera
     }
 
     func pick(at point: CGPoint, viewSize: CGSize, camera: Camera) -> HostSelection? {
@@ -670,7 +680,12 @@ final class HostGlobeScene {
         return best?.0
     }
 
-    func resolveLabels(camera: Camera, viewSize: CGSize) {
+    func resolveLabels(camera: Camera, viewSize: CGSize, labelMode: LabelMode) {
+        // HOST has no event labels, so `.events` behaves like `.selected`.
+        guard labelMode != .off else {
+            labels = []
+            return
+        }
         let viewport = SIMD2<Float>(Float(viewSize.width), Float(viewSize.height))
         var entries: [(AtlasLabel, Float)] = []
         if let selection, case .app(let id) = selection, let node = appNodes[id] {
@@ -685,19 +700,33 @@ final class HostGlobeScene {
         if let hover, case .domain(let id) = hover, let node = domainNodes[id] {
             entries.append((domainLabel(node, camera: camera, viewport: viewport), 110))
         }
-        let topApps = appNodes.values
-            .filter { $0.presence > 0.35 && $0.stat.totalPerSecond > 0 }
-            .sorted { $0.stat.totalPerSecond > $1.stat.totalPerSecond }
-            .prefix(2)
-        for node in topApps where node.stat.id != selection?.appID && node.stat.id != hover?.appID {
-            entries.append((appLabel(node, camera: camera, viewport: viewport), 30))
-        }
-        let topDomains = domainNodes.values
-            .filter { $0.presence > 0.35 && $0.stat.totalPerSecond > 0 }
-            .sorted { $0.stat.totalPerSecond > $1.stat.totalPerSecond }
-            .prefix(2)
-        for node in topDomains where node.stat.id != selection?.domainID && node.stat.id != hover?.domainID {
-            entries.append((domainLabel(node, camera: camera, viewport: viewport), 20))
+        // Ambient tags follow the shared label mode. The default `.selected`
+        // mode must not leave the busiest bodies tagged all the time.
+        if labelMode == .all {
+            let topApps = appNodes.values
+                .filter { $0.presence > 0.35 && $0.stat.totalPerSecond > 0 }
+                .sorted {
+                    if $0.stat.totalPerSecond != $1.stat.totalPerSecond {
+                        return $0.stat.totalPerSecond > $1.stat.totalPerSecond
+                    }
+                    return $0.stat.id < $1.stat.id
+                }
+                .prefix(2)
+            for node in topApps where node.stat.id != selection?.appID && node.stat.id != hover?.appID {
+                entries.append((appLabel(node, camera: camera, viewport: viewport), 30))
+            }
+            let topDomains = domainNodes.values
+                .filter { $0.presence > 0.35 && $0.stat.totalPerSecond > 0 }
+                .sorted {
+                    if $0.stat.totalPerSecond != $1.stat.totalPerSecond {
+                        return $0.stat.totalPerSecond > $1.stat.totalPerSecond
+                    }
+                    return $0.stat.id < $1.stat.id
+                }
+                .prefix(2)
+            for node in topDomains where node.stat.id != selection?.domainID && node.stat.id != hover?.domainID {
+                entries.append((domainLabel(node, camera: camera, viewport: viewport), 20))
+            }
         }
         entries.sort { $0.1 > $1.1 }
         var placed: [CGRect] = []
@@ -735,7 +764,7 @@ final class HostGlobeScene {
             blur: 0,
             size: size,
             accessibilityLabel: "\(host), \(detail)",
-            isHost: true
+            tone: .host
         )
     }
 
@@ -761,7 +790,7 @@ final class HostGlobeScene {
             blur: 0,
             size: size,
             accessibilityLabel: "\(host), \(detail)",
-            isHost: true
+            tone: .host
         )
     }
 
@@ -809,12 +838,5 @@ final class HostGlobeScene {
             hash = hash &* 1099511628211
         }
         return UInt32(truncatingIfNeeded: hash)
-    }
-}
-
-private extension NodeView {
-    var statsTotal: UInt64 {
-        guard let d = destinationRef else { return 0 }
-        return UInt64(max(0, d.liveQueries))
     }
 }

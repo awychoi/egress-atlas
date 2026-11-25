@@ -141,7 +141,8 @@ final class HostDomainAttributor {
         guard !host.isEmpty, HostScope.classify(host) != .loopback else { return }
         lock.lock()
         let cached = ptrCache[host]
-        let should = enabled && (cached == nil || Date().timeIntervalSince(cached!.at) > 900)
+        let stale = cached.map { Date().timeIntervalSince($0.at) > 900 } ?? true
+        let should = enabled && stale
         lock.unlock()
         guard should else { return }
         ptrQueue.async { [weak self] in

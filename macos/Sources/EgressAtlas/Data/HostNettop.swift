@@ -1,8 +1,8 @@
 import Foundation
 
-/// `nettop` is the fallback that works without root or a private entitlement.
-/// In one sample it emits a process row followed by that process's connection
-/// rows, all in CSV:
+/// `nettop` is the primary sampler and works without root or a private
+/// entitlement. In one sample it emits a process row followed by that process's
+/// connection rows, all in CSV:
 ///
 ///     time,Process.123,,,bytes_in,bytes_out,...
 ///     time,tcp4 10.0.0.2:50000<->93.184.216.34:443,en0,Established,1234,567,...
@@ -10,7 +10,7 @@ import Foundation
 /// Per-connection counters are cumulative, like netstat's, so the monitor can
 /// diff the same way. It is slower than netstat (one second per sample) and
 /// does not include every kernel socket, but it covers the app traffic the
-/// HOST globe needs when netstat is denied by the sandbox.
+/// HOST globe needs; netstat is the fallback when nettop returns nothing.
 enum HostNettopParser {
     static func parse(_ text: String) -> [HostSocketSample] {
         var current: (pid: pid_t, name: String)?

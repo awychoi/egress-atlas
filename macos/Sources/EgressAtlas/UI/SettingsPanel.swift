@@ -388,7 +388,7 @@ struct SettingsPanel: View {
             }
             .padding(.top, 8)
 
-            Text("Reads this Mac's own socket counters. No packet capture, no payloads, no history. It never contacts this Mac's traffic.")
+            Text("Reads this Mac's own socket counters. No packet capture, no payloads, no history. It never captures this Mac's traffic.")
                 .font(.atlasSans(9, .regular))
                 .lineSpacing(2)
                 .foregroundColor(Palette.hostMuted.color)
@@ -400,7 +400,7 @@ struct SettingsPanel: View {
                     Text("Host monitoring")
                         .font(.atlasSans(10.5, .medium))
                         .foregroundColor(Palette.hostText2.color)
-                    Text(runtime.hostPaused ? "paused; existing bodies stay on screen" : "samples netstat once a second")
+                    Text(runtime.hostPaused ? "paused; existing bodies stay on screen" : "samples nettop once a second")
                         .font(.atlasSans(8.5, .regular))
                         .foregroundColor(Palette.hostMeta.color)
                 }
@@ -520,7 +520,7 @@ struct SettingsPanel: View {
                 Text("Labels")
                     .font(.atlasSans(10.5, .medium))
                     .foregroundColor(Palette.text2.color)
-                Text("brief labels on events, selection, or never")
+                Text("brief labels on events, selection, all, or never")
                     .font(.atlasSans(8.5, .regular))
                     .foregroundColor(Palette.dim.color)
                     .padding(.top, 2)

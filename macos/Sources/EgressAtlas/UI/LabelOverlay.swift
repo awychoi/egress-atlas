@@ -70,7 +70,7 @@ struct AtlasLabelView: View {
     }
 
     private var accent: Color {
-        if label.isHost {
+        if label.tone == .host {
             return (label.hovered || label.selected) ? hostAccentHot.color : hostAccent.color
         }
         if label.kind == .device { return Palette.signal.color }
@@ -78,7 +78,7 @@ struct AtlasLabelView: View {
     }
 
     private var borderColor: Color {
-        if label.isHost {
+        if label.tone == .host {
             return (label.hovered || label.selected)
                 ? hostAccentHot.opacity(0.62) : hostAccent.opacity(0.32)
         }
@@ -92,7 +92,7 @@ struct AtlasLabelView: View {
     }
 
     private var hostColor: Color {
-        if label.isHost {
+        if label.tone == .host {
             return (label.hovered || label.selected) ? Palette.hostText.color : Palette.hostText2.color
         }
         if label.kind == .device { return Palette.signalIce.color }
@@ -104,14 +104,14 @@ struct AtlasLabelView: View {
         VStack(spacing: 3) {
             HStack(spacing: 6) {
                 if label.kind == .device {
-                    let dot = label.isHost ? hostAccent : Palette.signal
+                    let dot = label.tone == .host ? hostAccent : Palette.signal
                     ZStack {
                         Circle().strokeBorder(dot.opacity(0.42), lineWidth: 1)
                         TinyDot(color: dot.color, size: 5, glow: 7)
                     }
                     .frame(width: 12, height: 12)
                 } else {
-                    let keyColor = label.isHost ? hostAccent
+                    let keyColor = label.tone == .host ? hostAccent
                         : (label.blocked ? Palette.coral : Palette.gold)
                     Text(label.key)
                         .font(.atlasMono(5.6, .regular))
@@ -133,7 +133,7 @@ struct AtlasLabelView: View {
                     .truncationMode(.middle)
 
                 if let badge = label.badge {
-                    let badgeColor = label.isHost ? hostAccent
+                    let badgeColor = label.tone == .host ? hostAccent
                         : (label.blocked ? Palette.coral : Palette.signal)
                     Text(badge.uppercased())
                         .font(.atlasMono(5.4, .regular))
@@ -153,7 +153,7 @@ struct AtlasLabelView: View {
             .padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .fill(label.isHost ? Color.rgba("050d11", 0.88) : Color.rgba("0c0704", 0.82))
+                    .fill(label.tone == .host ? Color.rgba("050d11", 0.88) : Color.rgba("0c0704", 0.82))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
@@ -166,7 +166,7 @@ struct AtlasLabelView: View {
                 Text(label.meta.uppercased())
                     .font(.atlasMono(6.2, .regular))
                     .tracking(6.2 * 0.08)
-                    .foregroundColor(label.isHost ? Palette.hostMuted.color
+                    .foregroundColor(label.tone == .host ? Palette.hostMuted.color
                                      : (label.blocked ? Color.rgba("e08068", 0.75)
                                         : (label.kind == .device ? Color.rgba("45b8e8", 0.7)
                                            : Color.rgba("8fbea0", 0.8))))
@@ -174,7 +174,7 @@ struct AtlasLabelView: View {
                 Text(label.detail)
                     .font(.atlasMono(6.2, .regular))
                     .tracking(6.2 * 0.08)
-                    .foregroundColor(label.isHost ? Palette.hostMeta.color : Palette.dim.color)
+                    .foregroundColor(label.tone == .host ? Palette.hostMeta.color : Palette.dim.color)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -206,6 +206,7 @@ extension AtlasLabelView: Equatable {
         let b = rhs.label
         return a.id == b.id
             && a.kind == b.kind
+            && a.tone == b.tone
             && a.key == b.key
             && a.host == b.host
             && a.badge == b.badge

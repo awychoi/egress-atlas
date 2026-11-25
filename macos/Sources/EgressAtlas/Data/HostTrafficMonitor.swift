@@ -1,201 +1,11 @@
 import Foundation
-import AppKit
-import Darwin
-
-// MARK: - Scope and domain
-
-enum HostScope: String, CaseIterable, Identifiable {
-    case internet
-    case lan
-    case vpn
-    case loopback
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .internet: return "Internet"
-        case .lan: return "LAN"
-        case .vpn: return "VPN"
-        case .loopback: return "Loopback"
-        }
-    }
-
-    static func classify(_ host: String) -> HostScope {
-        let h = host.lowercased()
-        if h == "localhost" || h == "::1" || h.hasPrefix("127.") || h.hasPrefix("fe80:")
-            || h.hasPrefix("::ffff:127.") {
-            return .loopback
-        }
-        var addr4 = in_addr()
-        if inet_pton(AF_INET, host, &addr4) == 1 {
-            let b = withUnsafeBytes(of: &addr4.s_addr) { Array($0) }
-            guard b.count == 4 else { return .internet }
-            let first = b[0], second = b[1]
-            if first == 10 { return .lan }
-            if first == 192 && second == 168 { return .lan }
-            if first == 172 && (16...31).contains(second) { return .lan }
-            if first == 169 && second == 254 { return .lan }
-            if first == 100 && (64...127).contains(second) { return .vpn }
-            return .internet
-        }
-        var addr6 = in6_addr()
-        if inet_pton(AF_INET6, host, &addr6) == 1 {
-            let b = withUnsafeBytes(of: &addr6) { Array($0) }
-            if b.count == 16 {
-                if b[0] & 0xfe == 0xfc { return .lan }        // fc00::/7 ULA
-                if b[0] == 0x20 && b[1] == 0x01 && b[2] == 0x0d && b[3] == 0xb8 {
-                    return .vpn                              // 2001:db8::/32 documentation range
-                }
-            }
-            return .internet
-        }
-        return .internet
-    }
-}
-
-enum HostDomainConfidence: Int, Comparable {
-    case none = 0
-    case service = 1
-    case ptr = 2
-    case temporal = 3
-    case exact = 4
-
-    static func < (lhs: HostDomainConfidence, rhs: HostDomainConfidence) -> Bool {
-        lhs.rawValue < rhs.rawValue
-    }
-
-    var label: String {
-        switch self {
-        case .none: return "IP ONLY"
-        case .service: return "SERVICE"
-        case .ptr: return "PTR"
-        case .temporal: return "LIKELY"
-        case .exact: return "MATCH"
-        }
-    }
-}
-
-struct HostDomainMatch: Equatable {
-    let domain: String
-    let confidence: HostDomainConfidence
-    var service: String? = nil
-}
-
-// MARK: - Snapshot models
-
-struct HostEndpointStat: Identifiable {
-    let id: String
-    let appID: String
-    let remoteHost: String
-    let remotePort: Int
-    let proto: String
-    let service: String
-    let scope: HostScope
-    var domain: String?
-    var confidence: HostDomainConfidence
-    var rxPerSecond: Double
-    var txPerSecond: Double
-    var rxTotal: UInt64
-    var txTotal: UInt64
-    var socketCount: Int
-    var lastSeen: Date
-
-    var displayName: String { domain ?? "\(remoteHost):\(remotePort)" }
-}
-
-struct HostAppStat: Identifiable {
-    let id: String
-    let name: String
-    let detail: String
-    let path: String
-    let isSystem: Bool
-    let icon: NSImage?
-    var pids: Set<Int>
-    var rxPerSecond: Double
-    var txPerSecond: Double
-    var rxTotal: UInt64
-    var txTotal: UInt64
-    var socketCount: Int
-    var endpoints: [HostEndpointStat]
-
-    var totalPerSecond: Double { rxPerSecond + txPerSecond }
-}
-
-struct HostDomainStat: Identifiable {
-    let id: String
-    let name: String
-    let isDomain: Bool
-    let scope: HostScope
-    let confidence: HostDomainConfidence
-    let service: String
-    var rxPerSecond: Double
-    var txPerSecond: Double
-    var rxTotal: UInt64
-    var txTotal: UInt64
-    var appIDs: Set<String>
-    var endpointIDs: Set<String>
-    var lastSeen: Date
-
-    var totalPerSecond: Double { rxPerSecond + txPerSecond }
-}
-
-struct HostTransfer: Identifiable {
-    let id: String
-    let appID: String
-    let domainID: String
-    let endpointID: String
-    let domain: String?
-    let service: String
-    let bytesIn: UInt64
-    let bytesOut: UInt64
-    let at: Date
-}
-
-struct HostRatePoint: Identifiable {
-    let id = UUID()
-    let rx: Double
-    let tx: Double
-}
-
-struct HostSnapshot {
-    let date: Date
-    let apps: [HostAppStat]
-    let endpoints: [HostEndpointStat]
-    let domains: [HostDomainStat]
-    let transfers: [HostTransfer]
-    let history: [HostRatePoint]
-    let rxPerSecond: Double
-    let txPerSecond: Double
-    let sessionRx: UInt64
-    let sessionTx: UInt64
-    let available: Bool
-    let note: String?
-    let enabledScopes: Set<HostScope>
-
-    static let empty = HostSnapshot(
-        date: Date(), apps: [], endpoints: [], domains: [], transfers: [],
-        history: [], rxPerSecond: 0, txPerSecond: 0,
-        sessionRx: 0, sessionTx: 0, available: true, note: nil,
-        enabledScopes: [.internet, .lan, .vpn]
-    )
-}
-
-// MARK: - Process identity
-
-struct HostProcessIdentity {
-    let appID: String
-    let name: String
-    let detail: String
-    let path: String
-    let isSystem: Bool
-}
 
 // MARK: - Monitor
 
 /// Samples the Mac's own sockets once per second, diffs cumulative counters and
 /// publishes a host-traffic snapshot. No root, no entitlements, no packet
-/// capture: the data comes from the system's Apple-signed `netstat`.
+/// capture: it reads `/usr/bin/nettop` first and falls back to Apple-signed
+/// `/usr/sbin/netstat`.
 final class HostTrafficMonitor {
     private(set) var snapshot: HostSnapshot = .empty
     var onSnapshot: ((HostSnapshot) -> Void)?
@@ -229,15 +39,12 @@ final class HostTrafficMonitor {
     private var endpointAccum: [String: EndpointAccum] = [:]
     private var appAccum: [String: AppAccum] = [:]
     private var identityCache: [Int: HostProcessIdentity] = [:]
-    private var iconCache: [String: NSImage?] = [:]
     private var failedSamples = 0
     private var note: String?
 
     private var history: [HostRatePoint] = []
     private var sessionRx: UInt64 = 0
     private var sessionTx: UInt64 = 0
-    private var lastAppRates: [String: (rx: Double, tx: Double)] = [:]
-    private var lastEndpointRates: [String: (rx: Double, tx: Double)] = [:]
 
     private struct EndpointAccum {
         var appID: String
@@ -334,7 +141,7 @@ final class HostTrafficMonitor {
     }
 
     /// Test hook: feed a socket table through the same delta/aggregation path
-    /// without spawning netstat or waiting for the timer.
+    /// without spawning nettop/netstat or waiting for the timer.
     func debugIngest(_ sockets: [HostSocketSample], at now: Date, dt: Double,
                      baseline: Bool = false) {
         process(sockets: sockets, now: now, dt: dt, baseline: baseline)
@@ -353,12 +160,9 @@ final class HostTrafficMonitor {
         var tickEndpointTx: [String: Double] = [:]
         var tickEndpointSockets: [String: Int] = [:]
         var transfers: [HostTransfer] = []
-        var seenKeys = Set<String>()
-        _ = seenKeys
 
         for socket in sockets {
             let k = key(socket)
-            seenKeys.insert(k)
             let old = previous[k]
             var drx: UInt64 = 0
             var dtx: UInt64 = 0
@@ -420,7 +224,8 @@ final class HostTrafficMonitor {
                 transfers.append(HostTransfer(
                     id: "\(endpointID)-\(Int(now.timeIntervalSince1970 * 1000))-\(transfers.count)",
                     appID: identity.appID,
-                    domainID: domainID(domain: endpoint.domain, endpoint: endpoint),
+                    domainID: domainID(domain: endpoint.domain, host: endpoint.host,
+                                       port: endpoint.port),
                     endpointID: endpointID,
                     domain: endpoint.domain,
                     service: service,
@@ -525,7 +330,6 @@ final class HostTrafficMonitor {
                 detail: app.identity.detail,
                 path: app.identity.path,
                 isSystem: app.identity.isSystem,
-                icon: icon(for: app.identity),
                 pids: app.pids,
                 rxPerSecond: app.rxRate,
                 txPerSecond: app.txRate,
@@ -541,9 +345,8 @@ final class HostTrafficMonitor {
         // Domain rollup: inferred domains win over IP:port endpoints.
         var domainsByID: [String: HostDomainStat] = [:]
         for endpoint in endpoints {
-            let id = domainID(domain: endpoint.domain, endpoint: (
-                appID: endpoint.appID, host: endpoint.remoteHost, port: endpoint.remotePort,
-                proto: endpoint.proto, service: endpoint.service, scope: endpoint.scope))
+            let id = domainID(domain: endpoint.domain, host: endpoint.remoteHost,
+                              port: endpoint.remotePort)
             let name = endpoint.domain ?? "\(endpoint.remoteHost):\(endpoint.remotePort)"
             var domain = domainsByID[id] ?? HostDomainStat(
                 id: id, name: name, isDomain: endpoint.domain != nil,
@@ -611,14 +414,9 @@ final class HostTrafficMonitor {
         "\(appID)|\(proto)|\(host)|\(port)"
     }
 
-    private func domainID(domain: String?, endpoint: EndpointAccum) -> String {
+    private func domainID(domain: String?, host: String, port: Int) -> String {
         if let domain { return "d:\(domain)" }
-        return "e:\(endpoint.host):\(endpoint.port)"
-    }
-
-    private func domainID(domain: String?, endpoint: (appID: String, host: String, port: Int, proto: String, service: String, scope: HostScope)) -> String {
-        if let domain { return "d:\(domain)" }
-        return "e:\(endpoint.host):\(endpoint.port)"
+        return "e:\(host):\(port)"
     }
 
     private func identity(for pid: Int, scope: HostScope? = nil) -> HostProcessIdentity {
@@ -633,150 +431,5 @@ final class HostTrafficMonitor {
         return HostProcessIdentity(appID: appID, name: appID, detail: "host process",
                                    path: "", isSystem: false)
     }
-
-    private func icon(for identity: HostProcessIdentity) -> NSImage? {
-        if let cached = iconCache[identity.appID] { return cached }
-        var image: NSImage?
-        if identity.path.contains(".app/") {
-            image = NSWorkspace.shared.icon(forFile: identity.path)
-        }
-        if image == nil, identity.detail.contains("."),
-           let app = NSRunningApplication.runningApplications(withBundleIdentifier: identity.detail).first {
-            image = app.icon
-        }
-        iconCache[identity.appID] = image
-        return image
-    }
 }
 
-// MARK: - Process identity resolution
-
-enum HostProcessIdentityResolver {
-    private static let friendly: [String: String] = [
-        "apsd": "Apple Push",
-        "mDNSResponder": "DNS resolver",
-        "rapportd": "Continuity",
-        "nsurlsessiond": "Background downloads",
-        "syslogd": "System log",
-        "netbiosd": "NetBIOS",
-        "configd": "Network config",
-        "identityservicesd": "Identity services",
-        "cloudd": "iCloud",
-        "bird": "iCloud Drive",
-        "sharingd": "AirDrop",
-        "wifip2pd": "Wi-Fi peer-to-peer",
-        "nesessionmanage": "Network sessions",
-        "securityd": "Security",
-    ]
-
-    static func resolve(pid: Int) -> HostProcessIdentity {
-        let path = procPath(pid)
-        let running = NSRunningApplication(processIdentifier: pid_t(pid))
-        let bundleID = running?.bundleIdentifier ?? ""
-        let isSystem = isSystemPath(path)
-        let display: String
-        let detail: String
-        let appID: String
-
-        if let path, let appRange = path.range(of: ".app/") {
-            let bundlePath = String(path[..<appRange.lowerBound]) + ".app"
-            let bundleName = (bundlePath as NSString).lastPathComponent
-                .replacingOccurrences(of: ".app", with: "")
-            display = running?.localizedName ?? bundleName
-            detail = bundleID.isEmpty ? bundleName : bundleID
-            appID = bundleID.isEmpty ? "app:\(bundlePath)" : "app:\(bundleID)"
-        } else if let path {
-            let base = (path as NSString).lastPathComponent
-            display = friendly[base] ?? base
-            detail = isSystem ? "system service" : path
-            appID = "svc:\(path)"
-        } else if let running {
-            display = running.localizedName ?? "pid \(pid)"
-            detail = bundleID.isEmpty ? "pid \(pid)" : bundleID
-            appID = bundleID.isEmpty ? "pid:\(pid)" : "app:\(bundleID)"
-        } else {
-            display = "pid \(pid)"
-            detail = "process"
-            appID = "pid:\(pid)"
-        }
-        return HostProcessIdentity(appID: appID, name: display, detail: detail,
-                                   path: path ?? "", isSystem: isSystem)
-    }
-
-    private static func procPath(_ pid: Int) -> String? {
-        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        let count = proc_pidpath(Int32(pid), &buffer, UInt32(MAXPATHLEN))
-        guard count > 0 else { return nil }
-        return String(cString: buffer)
-    }
-
-    private static func isSystemPath(_ path: String?) -> Bool {
-        guard let path else { return true }
-        return path.hasPrefix("/System/") || path.hasPrefix("/usr/libexec/")
-            || path.hasPrefix("/usr/sbin/") || path.hasPrefix("/sbin/")
-            || path.hasPrefix("/Library/SystemExtensions/")
-    }
-}
-
-// MARK: - Service names
-
-enum HostServiceNames {
-    private static let known: [Int: String] = [
-        20: "FTP data", 21: "FTP", 22: "SSH", 25: "SMTP", 53: "DNS",
-        67: "DHCP", 68: "DHCP", 80: "HTTP", 88: "Kerberos", 110: "POP",
-        123: "NTP", 135: "RPC", 137: "NetBIOS", 138: "NetBIOS", 139: "SMB",
-        143: "IMAP", 161: "SNMP", 162: "SNMP", 179: "BGP", 389: "LDAP",
-        443: "HTTPS", 445: "SMB", 465: "SMTPS", 500: "IKE", 514: "Syslog",
-        548: "AFP", 587: "SMTP", 631: "IPP", 636: "LDAPS", 853: "DoT",
-        993: "IMAPS", 995: "POP3S", 1900: "SSDP", 3306: "MySQL",
-        3478: "STUN", 5222: "XMPP", 5223: "APNs", 5228: "FCM",
-        5353: "mDNS", 5432: "Postgres", 7000: "AirPlay", 8000: "HTTP alt",
-        8080: "HTTP alt", 8443: "HTTPS alt", 9090: "HTTP alt",
-        49152: "Ephemeral", 51820: "WireGuard",
-    ]
-
-    static func name(port: Int, proto: String) -> String {
-        if let name = known[port] { return name }
-        if proto.hasPrefix("udp"), port > 1024 { return port == 5353 ? "mDNS" : "UDP" }
-        if proto.hasPrefix("tcp") { return "TCP" }
-        return "Socket"
-    }
-}
-
-// MARK: - Local addresses
-
-enum HostLocalAddresses {
-    static func current() -> Set<String> {
-        var addresses = Set<String>()
-        var ifap: UnsafeMutablePointer<ifaddrs>?
-        guard getifaddrs(&ifap) == 0, let first = ifap else { return addresses }
-        defer { freeifaddrs(ifap) }
-        var cursor: UnsafeMutablePointer<ifaddrs>? = first
-        while let entry = cursor {
-            let ifa = entry.pointee
-            guard let addr = ifa.ifa_addr else {
-                cursor = ifa.ifa_next
-                continue
-            }
-            let family = addr.pointee.sa_family
-            if family == AF_INET || family == AF_INET6 {
-                var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                let result = getnameinfo(addr, socklen_t(addr.pointee.sa_len),
-                                          &host, socklen_t(NI_MAXHOST), nil, 0,
-                                          NI_NUMERICHOST)
-                if result == 0 {
-                    var text = String(cString: host)
-                    if let percent = text.firstIndex(of: "%") {
-                        text = String(text[..<percent])
-                    }
-                    let scope = HostScope.classify(text)
-                    if scope == .lan || scope == .internet || scope == .vpn {
-                        addresses.insert(text)
-                    }
-                }
-            }
-            cursor = ifa.ifa_next
-        }
-        return addresses
-    }
-}
