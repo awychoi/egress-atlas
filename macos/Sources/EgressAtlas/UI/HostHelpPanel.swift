@@ -34,9 +34,9 @@ struct HostHelpPanel: View {
 
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
-                    SectionKicker(title: "The two globes")
+                    SectionKicker(title: "The two globes", color: Palette.hostMuted.color, valueColor: Palette.hostFaint.color)
                     hostText("The warm globe is the DNS network. The cool globe is this Mac's live socket traffic. The inactive globe sits farther away, orbits behind the active one and never takes the camera. Click it, press G, or use ⌘1 / ⌘2 to focus a globe.")
-                    SectionKicker(title: "Moving around").padding(.top, 12)
+                    SectionKicker(title: "Moving around", color: Palette.hostMuted.color, valueColor: Palette.hostFaint.color).padding(.top, 12)
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 1), GridItem(.flexible(), spacing: 1)], spacing: 1) {
                         gesture("Drag", "Orbit the active globe")
                         gesture("Right-drag", "Move the globe freely")
@@ -45,15 +45,15 @@ struct HostHelpPanel: View {
                         gesture("Double-click", "Fly to a body")
                     }
                     .padding(.top, 6)
-                    SectionKicker(title: "Traffic").padding(.top, 12)
+                    SectionKicker(title: "Traffic", color: Palette.hostMuted.color, valueColor: Palette.hostFaint.color).padding(.top, 12)
                     hostText("Apps and services are teal outer bodies. Remote domains are blue inner bodies; a domain is inferred from this Mac's Pi-hole dnsmasq log and local resolution. MATCH means an exact answer IP, LIKELY means several candidates shared an IP, PTR is reverse DNS, and IP ONLY means no name was resolved. IP:port is always the fallback and appears in the inspector.")
-                    hostText("↓ inbound is ice; ↑ outbound is violet. Direction is also carried by the arrow and by the comet's travel. The scope chips in the dock choose Internet, LAN, VPN and Loopback; loopback is off by default because it double counts local IPC.")
+                    hostText("The camera-facing half of the field stays in focus; the far half dims with its effects and labels. Select a body to set a local display alias for an app or an IP/domain remote.")
+                    hostText("↓ inbound is ice; ↑ outbound is violet. Direction is also carried by the arrow and by the comet's travel. Outbound traffic to an external site lands as a cold blast; a loopback address on this Mac answers with a mint pulse. The scope chips in the dock choose Internet, LAN, VPN and Loopback; loopback is off by default because it double counts local IPC.")
                     hostText("HOST is live only. There is no replay, no history and no background collector. This app never captures packet payloads and never sends host traffic anywhere.")
-                    SectionKicker(title: "Keys").padding(.top, 12)
+                    SectionKicker(title: "Keys", color: Palette.hostMuted.color, valueColor: Palette.hostFaint.color).padding(.top, 12)
                     keyRow("G", "toggle the focused globe")
                     keyRow("⌘1 / ⌘2", "focus DNS / HOST")
                     keyRow("Space", "pause or resume host sampling")
-                    keyRow("F", "DNS outcome filter (DNS mode only)")
                     keyRow("Esc", "close panel or clear selection")
                 }
                 .padding(.horizontal, 16)
@@ -72,7 +72,7 @@ struct HostHelpPanel: View {
             .overlay(alignment: .top) { Hairline(color: Palette.hostText.opacity(0.08)) }
         }
         .frame(width: metrics.helpWidth)
-        .frame(height: min(metrics.helpHeight, max(280, metrics.height - metrics.railTop - 28)))
+        .frame(height: min(660, max(280, metrics.height - metrics.railTop - 28)))
         .background(Palette.hostField.color.opacity(0.985))
         .background(CoolGlass(radius: 12, strong: true))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))

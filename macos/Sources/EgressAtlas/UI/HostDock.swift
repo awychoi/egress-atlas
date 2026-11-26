@@ -44,7 +44,10 @@ struct HostDock: View {
     private var clock: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
-                Eyebrow(text: "Live", size: 6.5, color: Palette.hostMeta.color, trackingEm: 0.16)
+                Eyebrow(text: runtime.hostPaused ? "Paused"
+                            : (runtime.hostDemoActive ? "Demo" : "Live"), size: 6.5,
+                        color: runtime.hostPaused ? Palette.hostOut.color : Palette.hostMeta.color,
+                        trackingEm: 0.16)
                 if !metrics.tiny {
                     Text("THIS MAC")
                         .font(.atlasMono(5.7, .regular))
@@ -64,10 +67,11 @@ struct HostDock: View {
                     .foregroundColor(Palette.hostOut.color)
                     .lineLimit(1)
             }
-            Text(runtime.hostPaused ? "PAUSED" : "STREAMING")
+            Text(runtime.hostPaused ? "PAUSED"
+                 : (runtime.hostDemoActive ? "SAMPLE TRAFFIC" : "STREAMING"))
                 .font(.atlasMono(6.3, .regular))
                 .tracking(6.3 * 0.11)
-                .foregroundColor(runtime.hostPaused ? Palette.coral.color : Palette.hostFaint.color)
+                .foregroundColor(runtime.hostPaused ? Palette.hostOut.color : Palette.hostFaint.color)
         }
         .frame(minWidth: metrics.tiny ? 124 : 184, alignment: .leading)
     }
@@ -161,12 +165,17 @@ struct HostDock: View {
     }
 
     private var legend: some View {
-        HStack(spacing: 11) {
+        let hasLocal = !metrics.tiny
+            && runtime.hostSnapshot.domains.contains(where: { $0.scope == .loopback })
+        return HStack(spacing: 11) {
             legendItem(Palette.hostGlow, "INBOUND")
             legendItem(Palette.hostOut, "OUTBOUND")
             legendItem(Palette.hostApp, "APP")
             legendItem(Palette.hostRemote, "DOMAIN")
-            if !metrics.tiny {
+            if hasLocal {
+                legendItem(Palette.hostMint, "LOCAL")
+            }
+            if !metrics.tiny && !hasLocal {
                 Text("LIVE ONLY · NO HISTORY")
                     .font(.atlasMono(5.8, .regular))
                     .tracking(5.8 * 0.06)

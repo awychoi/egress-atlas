@@ -6,8 +6,7 @@ struct WindowStop {
 }
 
 enum Windows {
-    /// Same non-linear scale as app/src/data/windows.js: every hour up to 12,
-    /// then every day up to 7 days.
+    /// Non-linear scale: every hour up to 12, then every day up to 7 days.
     static let stops: [WindowStop] = {
         var out: [WindowStop] = []
         for h in 1...12 {

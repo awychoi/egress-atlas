@@ -31,7 +31,7 @@ struct LocalTrafficEvent {
     let service: String
 }
 
-/// Deterministic synthetic DNS traffic from app/src/data/LiveSource.js.
+/// Deterministic synthetic DNS traffic.
 final class LiveSource: AtlasTrafficSource {
     let network: DemoNetwork
     var rng: RNG

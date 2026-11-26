@@ -18,14 +18,14 @@ struct LabelOverlay: View {
                     // Labels resolve every frame, but their contents (host,
                     // status, badge, detail) change rarely. EquatableView lets
                     // SwiftUI skip rebuilding the text stack when only the
-                    // anchor/blur moved; those stay outside the equatable
+                    // anchor/opacity moved; those stay outside the equatable
                     // boundary.
                     AtlasLabelView(label: label)
                         .equatable()
                         .transition(.opacity)
                         .position(x: clampedX(label, width: geo.size.width),
                                   y: clampedY(label, height: geo.size.height))
-                        .blur(radius: label.blur)
+                        .opacity(label.opacity)
                         .animation(anchorAnimation, value: label.anchor)
                         .transition(.opacity)
                         .zIndex(label.zPriority)
@@ -198,7 +198,7 @@ struct AtlasLabelView: View {
 
 extension AtlasLabelView: Equatable {
     /// Contents that require the SwiftUI text stack to be rebuilt. `anchor`
-    /// and `blur` are deliberately excluded: they are applied by modifiers
+    /// and `opacity` are deliberately excluded: they are applied by modifiers
     /// outside the equatable view and change every frame while the camera
     /// moves. Everything the view body reads is compared.
     static func == (lhs: AtlasLabelView, rhs: AtlasLabelView) -> Bool {

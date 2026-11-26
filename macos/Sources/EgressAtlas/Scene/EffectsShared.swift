@@ -2,7 +2,7 @@ import Foundation
 import simd
 
 /// Everything a motion study needs from the live scene. Effects are authored
-/// against the study contracts in app/src/lab/effects/shared.js.
+/// against this shared contract.
 struct EffectContext {
     var camera: Camera
     var node: NodeView?

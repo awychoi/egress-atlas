@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Egress Atlas — Host Motion Lab</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="scene" aria-label="Animated 3D host traffic globe with app and destination bodies"></canvas>
+  <div class="backdrop" aria-hidden="true"></div>
+  <div class="vignette" aria-hidden="true"></div>
+  <div class="grain" aria-hidden="true"></div>
+
+  <header class="topbar" id="topbar">
+    <div class="brand">
+      <img class="brand-mark" src="assets/brand-mark-host.png" alt="">
+      <div class="brand-copy">
+        <div class="brand-name">EGRESS ATLAS</div>
+        <div class="brand-sub"><span class="live-dot"></span>HOST MOTION LAB</div>
+      </div>
+    </div>
+    <div class="topbar-center" aria-hidden="true">
+      <span class="top-rule"></span>
+      <span class="top-center-copy">MOTION STUDIES · MAC GLOBE</span>
+      <span class="top-rule"></span>
+    </div>
+    <div class="topbar-right">
+      <span class="chip"><span class="chip-dot teal"></span>MAC GLOBE</span>
+      <span class="chip"><span class="chip-dot violet"></span>RECOIL ON</span>
+      <span class="chip muted">12 TAKES</span>
+    </div>
+  </header>
+
+  <aside class="panel library" id="library" aria-label="Motion study library">
+    <div class="panel-head">
+      <div class="kicker">MOTION LIBRARY</div>
+      <h1>Choose a take<span class="take-count">12</span></h1>
+      <p class="lede">Impact, arrival and retirement for the Mac globe. Every blast carries body recoil.</p>
+    </div>
+    <div class="groups" id="groups"></div>
+    <div class="library-foot">
+      <span class="foot-dot"></span>
+      <span>ALL STUDIES RUN ON APP + DESTINATION BODIES</span>
+    </div>
+  </aside>
+
+  <aside class="panel notes" id="notes" aria-label="Active study notes">
+    <div class="notes-head">
+      <div class="kicker">ACTIVE STUDY</div>
+      <div class="take-of"><span id="takeNo">01</span><em>/ 12</em></div>
+    </div>
+    <div class="notes-title-row">
+      <h2 id="takeName">Nova Lance</h2>
+      <span class="kind-tag" id="takeKind">IMPACT</span>
+    </div>
+    <p class="take-tagline" id="takeTag">Razor ring · violet afterimage</p>
+    <div class="rule"></div>
+    <div class="stat-row">
+      <div class="stat">
+        <span class="stat-label">DURATION</span>
+        <span class="stat-value" id="takeDur">1.15 s</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">RECOIL</span>
+        <span class="stat-value" id="takeRecoil">1.15× · strong</span>
+      </div>
+    </div>
+    <div class="recoil-track" id="recoilTrack"><i id="recoilFill"></i></div>
+    <div class="recoil-scale" id="recoilScale"><span>0</span><span>1.0×</span><span>1.5×</span></div>
+    <div class="look-block">
+      <div class="stat-label">LOOK FOR</div>
+      <p id="takeLook">A white-hot needle punches along the arrival tangent, then a razor ring tears open.</p>
+    </div>
+    <div class="target-block">
+      <div class="stat-label">PLAYS ON</div>
+      <div class="target-line" id="targetLine"><span class="role app">APP</span><b>Brave Browser</b><span class="arrow">+</span><span class="role dest">DEST</span><b>github.com</b></div>
+      <div class="incoming-line" id="incomingLine">INBOUND · DOMAIN → APP</div>
+    </div>
+    <div class="live-block">
+      <div class="live-top"><span id="liveState">READY</span><span id="liveTime">0.00 s</span></div>
+      <div class="live-track"><i id="liveFill"></i></div>
+    </div>
+    <div class="motion-note">
+      <div class="stat-label" id="motionLabel">RECOIL NOTE</div>
+      <p id="motionNote">The impulse rides the arrival tangent: the orb is knocked out of the ring and the spring settles without a second bounce.</p>
+    </div>
+    <div class="notes-foot">
+      <div class="legend-row"><span class="legend-dot app"></span>app on shell<span class="legend-dot dest"></span>destination inside</div>
+      <div class="keys"><kbd>SPACE</kbd> replay <kbd>1–4</kbd> take <kbd>R</kbd> reel</div>
+    </div>
+  </aside>
+
+  <div class="caption" id="caption" aria-live="polite">
+    <span class="caption-kicker">LIVE STUDY</span>
+    <span class="caption-body">Nova Lance on both bodies</span>
+  </div>
+
+  <footer class="panel dock" id="dock">
+    <div class="dock-progress"><i id="dockFill"></i></div>
+    <div class="dock-row">
+      <div class="dock-block target-block-ui">
+        <span class="dock-label">TARGET</span>
+        <div class="seg" id="targetSeg" role="group" aria-label="Play target">
+          <button type="button" data-target="app">APP</button>
+          <button type="button" data-target="domain">DESTINATION</button>
+          <button type="button" data-target="both" class="on">BOTH</button>
+        </div>
+      </div>
+      <div class="dock-sep"></div>
+      <div class="dock-block play-block">
+        <button type="button" class="play-btn" id="playBtn">
+          <svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 1.6 10 6 3 10.4Z"/></svg>
+          <span>PLAY STUDY</span>
+          <kbd>SPACE</kbd>
+        </button>
+        <button type="button" class="ghost-btn" id="prevBtn" aria-label="Previous take">←</button>
+        <button type="button" class="ghost-btn" id="nextBtn" aria-label="Next take">→</button>
+      </div>
+      <div class="dock-sep"></div>
+      <div class="dock-block toggles">
+        <button type="button" class="toggle" id="slowBtn" aria-pressed="false"><span class="toggle-dot"></span>SLOW <em>0.35×</em></button>
+        <button type="button" class="toggle" id="reelBtn" aria-pressed="false"><span class="toggle-dot"></span>REEL <em>AUTO</em></button>
+      </div>
+      <div class="dock-spacer"></div>
+      <div class="dock-hint">
+        <span>CLICK ANY ORB TO PLAY ON IT</span>
+        <span>DRAG TO ORBIT · SCROLL TO ZOOM</span>
+      </div>
+    </div>
+  </footer>
+
+  <div class="toast" id="toast" role="status"></div>
+  <div class="clean-hint" id="cleanHint">HOST MOTION LAB · <span id="cleanTake">01 / NOVA LANCE</span></div>
+
+  <noscript><div class="nojs">The motion lab needs JavaScript. Open this file in a browser with scripting enabled.</div></noscript>
+
+  <script src="app.js"></script>
+</body>
+</html>

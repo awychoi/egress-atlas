@@ -8,6 +8,8 @@ struct AliasEditor: View {
     enum Target {
         case device
         case destination
+        case hostApp
+        case hostDestination
     }
 
     @ObservedObject var runtime: AtlasRuntime
@@ -18,6 +20,8 @@ struct AliasEditor: View {
     /// Devices always keep their address; destinations follow the display
     /// preference for showing the original domain beside the alias.
     let target: Target
+    /// Accent for the editor chrome; host cards use their own cool tones.
+    var accent: SRGB = Palette.gold
     /// Persists an empty string as "remove the alias".
     let commit: (String) -> Void
 
@@ -37,6 +41,22 @@ struct AliasEditor: View {
         !(alias ?? "").isEmpty
     }
 
+    private var usesHostChrome: Bool {
+        target == .hostApp || target == .hostDestination
+    }
+
+    private var fieldFill: Color {
+        usesHostChrome ? Color.rgba("040d13", 0.7) : Color.rgba("080503", 0.55)
+    }
+
+    private var panelFill: Color {
+        usesHostChrome ? Color.rgba("06141a", 0.58) : Color.rgba("0b0604", 0.44)
+    }
+
+    private var disabledFill: Color {
+        usesHostChrome ? Color.rgba("07141b", 0.6) : Color.rgba("120a06", 0.55)
+    }
+
     private var helperText: String {
         guard hasAlias else { return "cards show \(original)" }
         switch target {
@@ -46,13 +66,19 @@ struct AliasEditor: View {
             return runtime.showAliasWithAddress
                 ? "alias + \(original)"
                 : "alias replaces \(original)"
+        case .hostApp:
+            return "alias replaces the app title · detail stays visible"
+        case .hostDestination:
+            return runtime.showAliasWithAddress
+                ? "alias + \(original)"
+                : "alias replaces \(original)"
         }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
-                Eyebrow(text: "Alias", size: 7.5, color: Palette.gold.color, trackingEm: 0.13)
+                Eyebrow(text: "Alias", size: 7.5, color: accent.color, trackingEm: 0.13)
                 Spacer(minLength: 6)
                 Text(hasAlias ? "LOCAL ONLY" : "NOT SET")
                     .font(.atlasMono(5.8, .regular))
@@ -67,9 +93,9 @@ struct AliasEditor: View {
                     .foregroundColor(Palette.text.color)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
-                    .background(RoundedRectangle(cornerRadius: 5).fill(Color.rgba("080503", 0.55)))
+                    .background(RoundedRectangle(cornerRadius: 5).fill(fieldFill))
                     .overlay(RoundedRectangle(cornerRadius: 5)
-                        .strokeBorder(focused ? Palette.gold.opacity(0.42) : Palette.text.opacity(0.1),
+                        .strokeBorder(focused ? accent.opacity(0.42) : Palette.text.opacity(0.1),
                                       lineWidth: 1))
                     .focused($focused)
                     .onSubmit { commitDraft() }
@@ -83,9 +109,9 @@ struct AliasEditor: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 7)
                         .background(RoundedRectangle(cornerRadius: 5)
-                            .fill(canSave ? Palette.gold.opacity(0.92) : Color.rgba("120a06", 0.55)))
+                            .fill(canSave ? accent.opacity(0.92) : disabledFill))
                         .overlay(RoundedRectangle(cornerRadius: 5)
-                            .strokeBorder(canSave ? Palette.gold.opacity(0.65) : Palette.text.opacity(0.08),
+                            .strokeBorder(canSave ? accent.opacity(0.65) : Palette.text.opacity(0.08),
                                           lineWidth: 1))
                 }
                 .buttonStyle(AtlasPlainButtonStyle())
@@ -104,7 +130,7 @@ struct AliasEditor: View {
                             .foregroundColor(Palette.coral.opacity(0.9))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 7)
-                            .background(RoundedRectangle(cornerRadius: 5).fill(Color.rgba("120a06", 0.55)))
+                            .background(RoundedRectangle(cornerRadius: 5).fill(disabledFill))
                             .overlay(RoundedRectangle(cornerRadius: 5)
                                 .strokeBorder(Palette.coral.opacity(0.2), lineWidth: 1))
                     }
@@ -121,23 +147,23 @@ struct AliasEditor: View {
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
-                if target == .destination {
+                if target == .destination || target == .hostDestination {
                     Text("SHOW BOTH")
                         .font(.atlasMono(5.9, .regular))
                         .tracking(5.9 * 0.06)
-                        .foregroundColor(runtime.showAliasWithAddress ? Palette.gold.color : Palette.dim.color)
+                        .foregroundColor(runtime.showAliasWithAddress ? accent.color : Palette.dim.color)
                     TinyToggle(isOn: Binding(get: { runtime.showAliasWithAddress },
                                              set: { runtime.setShowAliasWithAddress($0) }),
-                               label: "Show domain with alias")
-                        .help("Show the original domain beside destination aliases")
+                               label: "Show original with alias", tone: accent)
+                        .help("Show the original domain or IP beside destination aliases")
                 }
             }
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.rgba("0b0604", 0.44)))
+        .background(RoundedRectangle(cornerRadius: 6).fill(panelFill))
         .overlay(RoundedRectangle(cornerRadius: 6)
-            .strokeBorder(Palette.text.opacity(0.07), lineWidth: 1))
+            .strokeBorder(usesHostChrome ? accent.opacity(0.13) : Palette.text.opacity(0.07), lineWidth: 1))
         .padding(.top, 12)
         .onAppear { draft = alias ?? "" }
         .onChange(of: alias) { _, value in

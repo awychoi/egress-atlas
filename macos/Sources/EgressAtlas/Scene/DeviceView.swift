@@ -9,8 +9,8 @@ struct DeviceSpecView {
     let thisMac: Bool
 }
 
-/// Port of app/src/lab/DeviceView.js. A blue gyro orb sits on a tangent pad on
-/// the shell; its label and every mote share the same surface normal.
+/// A blue gyro orb sits on a tangent pad on the shell; its label and every
+/// mote share the same surface normal.
 final class DeviceView {
     let spec: DeviceSpecView
     unowned var deviceRef: Device!
@@ -24,6 +24,15 @@ final class DeviceView {
     var dimmed = false
     var labelWanted = true
     var shotAge: Float = 9
+    /// App impact recoil. The shell pad stays anchored; the instrument orb,
+    /// its gyros and its motes take the knock and settle on a critical spring.
+    var recoilActive = false
+    private var recoilPosition = Vec3.zero
+    private var recoilVelocity = Vec3.zero
+    private static let recoilStiffness: Float = 140
+    private static let recoilDamping: Float = 23.7
+    private static let recoilImpulse: Float = 44
+    var recoilOffset: Vec3 { recoilActive ? recoilPosition : .zero }
     var facing: Float = 0
     var displayVisibility: Float = 1
     var windowVisible = true
@@ -32,9 +41,16 @@ final class DeviceView {
     /// teal so app bodies never read as the same object class as domains.
     var bodyBase: SRGB = Palette.signal
     var bodyHot: SRGB = Palette.signalIce
-    /// Per-device defocus and stagger supplied by the owning scene.
+    /// Legacy depth-defocus slot. Scenes now use the shared hemisphere dim;
+    /// low-detail bokeh still uses `blurAlpha`.
     var defocus: Float = 0
     var stagger: Float = 0
+    /// Host apps shrink harder on retirement. DNS keeps the default 1.
+    var presenceScale: Float = 1
+    /// An animated shell re-slot travels to its target rather than snapping.
+    private var targetPosition: Vec3?
+    private var targetNormal: Vec3?
+    var isMoving: Bool { targetPosition != nil }
 
     enum AppearanceStyle: CaseIterable {
         case bloom
@@ -56,12 +72,12 @@ final class DeviceView {
 
     var visualCenter: Vec3 {
         let p = model * SIMD4(0, 0.33, 0, 1)
-        return Vec3(p.x, p.y, p.z)
+        return Vec3(p.x, p.y, p.z) + recoilOffset
     }
 
     var labelPosition: Vec3 {
         let p = model * SIMD4(0, 0.64, 0, 1)
-        return Vec3(p.x, p.y, p.z)
+        return Vec3(p.x, p.y, p.z) + recoilOffset
     }
 
     init(spec: DeviceSpecView, position: Vec3, normal: Vec3, radius: Float = 0.085, rng: RNG) {
@@ -88,11 +104,18 @@ final class DeviceView {
         }
     }
 
-    func setSurfacePosition(_ position: Vec3, _ normal: Vec3) {
-        self.position = position
-        self.normal = normal.normalized
-        deviceRef?.surface = position
-        deviceRef?.normal = normal.normalized
+    func setSurfacePosition(_ position: Vec3, _ normal: Vec3, animated: Bool = false) {
+        if animated {
+            targetPosition = position
+            targetNormal = normal.normalized
+        } else {
+            targetPosition = nil
+            targetNormal = nil
+            self.position = position
+            self.normal = normal.normalized
+            deviceRef?.surface = position
+            deviceRef?.normal = normal.normalized
+        }
     }
 
     func canPick() -> Bool {
@@ -125,6 +148,29 @@ final class DeviceView {
     }
     func onFire() { shotAge = 0 }
 
+    /// An app answered a transfer. The pad remains on the shell so the wire
+    /// and hit plane never move; the orb assembly is what recoils.
+    func onHit(_ direction: Vec3, recoil: Bool = true) {
+        shotAge = 0
+        guard recoil else { return }
+        var dir = direction.normalized
+        if !dir.x.isFinite || !dir.y.isFinite || !dir.z.isFinite || dir.lengthSq < 0.01 {
+            dir = Vec3(0, 0, -1)
+        }
+        recoilActive = true
+        recoilVelocity += dir * (radius * Self.recoilImpulse)
+        let maxSpeed = radius * 72
+        if recoilVelocity.length > maxSpeed {
+            recoilVelocity = recoilVelocity.withLength(maxSpeed)
+        }
+    }
+
+    func stopRecoil() {
+        recoilActive = false
+        recoilPosition = .zero
+        recoilVelocity = .zero
+    }
+
     var labelVisible: Bool {
         // A background device has no visible label until the pointer or
         // selection reaches it. Once it does, the tag stays crisp: the depth
@@ -135,6 +181,7 @@ final class DeviceView {
     }
 
     func update(dt: Float, elapsed: Float, camera: Camera) {
+        updatePosition(dt)
         let cameraDir = camera.position.normalized
         facing = normal.dot(cameraDir)
         let dim = smoothstep(-0.32, 0.36, facing)
@@ -147,12 +194,45 @@ final class DeviceView {
             appearanceAge = min(1, appearanceAge + dt / 0.72)
         }
         if shotAge < 1 { shotAge += dt }
+        if recoilActive {
+            var remaining = min(dt, 0.1)
+            while remaining > 0.00001 {
+                let step = min(remaining, 1.0 / 120.0)
+                let accel = recoilPosition * -Self.recoilStiffness
+                    - recoilVelocity * Self.recoilDamping
+                recoilVelocity += accel * step
+                recoilPosition += recoilVelocity * step
+                remaining -= step
+            }
+            if recoilPosition.length < radius * 0.002,
+               recoilVelocity.length < radius * 0.02 {
+                stopRecoil()
+            }
+        }
         padYaw += dt * 0.18
         for i in 0..<3 {
             gyroAngles[i].z += dt * (0.22 + Float(i) * 0.13)
             gyroAngles[i].y += dt * (0.22 + Float(i) * 0.13) * 0.55
         }
         _ = elapsed
+    }
+
+    private func updatePosition(_ dt: Float) {
+        guard let target = targetPosition else { return }
+        let k = 1 - exp(-min(dt, 0.1) * 6.5)
+        position += (target - position) * k
+        if let n = targetNormal {
+            let next = normal + (n - normal) * k
+            if next.lengthSq > 0.0001 { normal = next.normalized }
+        }
+        if position.distanceSquared(to: target) < 0.000001 {
+            position = target
+            if let n = targetNormal { normal = n.normalized }
+            targetPosition = nil
+            targetNormal = nil
+        }
+        deviceRef?.surface = position
+        deviceRef?.normal = normal
     }
 
     func appendDraw(_ draw: DrawList, elapsed: Float, detail: Float = 1) {
@@ -171,7 +251,7 @@ final class DeviceView {
         // fade, so a range change reads as an arrival or retirement rather
         // than a pop. An arrival triggered by a live query also plays one of a
         // few short device-specific studies once the pulse reaches the shell.
-        let grow = 0.58 + 0.42 * windowPresence
+        let grow = (0.58 + 0.42 * windowPresence) * presenceScale
         var model = self.model * Mat4.scale(Vec3(repeating: grow))
         var appearFlash: Float = 0
         if let style = appearanceStyle, windowVisible, appearanceAge < 1 {
@@ -193,7 +273,10 @@ final class DeviceView {
                 appearFlash = pow(1 - t, 2) * 0.16
             }
         }
-        let center4 = model * SIMD4(0, 0.33, 0, 1)
+        let orbModel = recoilActive
+            ? Mat4.translation(recoilOffset) * model
+            : model
+        let center4 = orbModel * SIMD4(0, 0.33, 0, 1)
         let center = Vec3(center4.x, center4.y, center4.z)
 
         if blurAlpha > 0.01 {
@@ -238,13 +321,13 @@ final class DeviceView {
         if gyroAlpha > 0.01 {
         // Three gyros. The torus supplies the soft bloom body; the 1 px line
         // keeps the instrument ring legible at native resolution, where the
-        // web's 0.0045 world tube is sub-pixel.
+        // 0.0045 world tube is sub-pixel.
         let gyroScale = Vec3(repeating: 0.345)
         for i in 0..<3 {
             let base = gyroBase[i]
             let angle = gyroAngles[i]
             let local = Mat4.eulerXYZ(base.x, base.y + angle.y, base.z + angle.z)
-            let m = model * Mat4.translation(Vec3(0, 0.33, 0)) * local * Mat4.scale(gyroScale)
+            let m = orbModel * Mat4.translation(Vec3(0, 0.33, 0)) * local * Mat4.scale(gyroScale)
             let color = i == 1 ? bodyHot : bodyBase
             let alpha = (0.28 + sin(elapsed * 1.6 + Float(i) * 2.1) * 0.1) * gyroAlpha * visibility
             draw.addMesh(.torus, MeshInstance(model: m, color: rgba(color, alpha)))
@@ -265,7 +348,7 @@ final class DeviceView {
         for m in moteData {
             let a = elapsed * m.speed + m.phase
             let local = Vec3(cos(a) * m.radius, sin(a * 1.7 + m.tilt) * 0.24, sin(a) * m.radius)
-            let p4 = model * SIMD4(local.x, local.y + 0.33, local.z, 1)
+            let p4 = orbModel * SIMD4(local.x, local.y + 0.33, local.z, 1)
             let p = Vec3(p4.x, p4.y, p4.z)
             let alpha = (0.22 + sin(elapsed * 2 + m.phase) * 0.16) * gyroAlpha * visibility
             draw.points.append(PointVertex(p, rgba(m.color, alpha), size: m.size * grow))
@@ -300,7 +383,7 @@ final class DeviceView {
         draw.sprites.append(.glow(Vec3(pool.x, pool.y, pool.z), size: 1.9 * grow,
                                   color: bodyBase, opacity: min(1, 0.15 * padAlpha * visibility * selectedBoost * 1.3)))
         let stemA = model * SIMD4(0, 0.02, 0, 1)
-        let stemB = model * SIMD4(0, 0.31, 0, 1)
+        let stemB = orbModel * SIMD4(0, 0.31, 0, 1)
         draw.addLine(Vec3(stemA.x, stemA.y, stemA.z), Vec3(stemB.x, stemB.y, stemB.z),
                      rgba(bodyBase, 0.18 * padAlpha * visibility * selectedBoost))
         }

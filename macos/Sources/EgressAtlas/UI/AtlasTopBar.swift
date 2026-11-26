@@ -6,13 +6,24 @@ struct AtlasTopBar: View {
     @State private var livePulse = false
     @State private var topRightWidth: CGFloat = 0
 
+    private var host: Bool { runtime.displayedGlobe == .host }
+    private var ink: Color { host ? Palette.hostText.color : Palette.text.color }
+    private var ink2: Color { host ? Palette.hostText2.color : Palette.text2.color }
+    private var muted: Color { host ? Palette.hostMuted.color : Palette.muted.color }
+    private var faint: Color { host ? Palette.hostFaint.color : Palette.faint.color }
+    private var line: Color { host ? Palette.hostText.opacity(0.11) : Palette.text.opacity(0.11) }
+    private var hairline: Color { host ? Palette.hostText.opacity(0.08) : Palette.text.opacity(0.08) }
+    private var subtleLine: Color { host ? Palette.hostText.opacity(0.062) : Palette.text.opacity(0.062) }
+    private var chipFill: Color { host ? Color.rgba("050d11", 0.72) : Color.rgba("0f0805", 0.62) }
+    private var chipFillStrong: Color { host ? Color.rgba("06141a", 0.82) : Color.rgba("110906", 0.68) }
+
     var body: some View {
         ZStack(alignment: .top) {
             HStack(alignment: .top, spacing: 12) {
                 brand
                     .padding(.top, metrics.brandTopInset)
                 panelNav
-                    .padding(.top, metrics.brandTopInset + 4)
+                    .padding(.top, metrics.brandTopInset + 9)
                 Spacer(minLength: 12)
                 topRight
                     .background(
@@ -42,16 +53,15 @@ struct AtlasTopBar: View {
     private var brand: some View {
         Group {
             if metrics.tiny {
-                BrandMark(side: metrics.brandLockupHeight)
+                BrandMark(side: metrics.brandLockupHeight, host: host)
             } else {
-                BrandLockup(height: metrics.brandLockupHeight)
+                BrandLockup(height: metrics.brandLockupHeight, host: host)
             }
         }
     }
 
     private var panelNav: some View {
-        let host = runtime.displayedGlobe == .host
-        return HStack(spacing: 2) {
+        HStack(spacing: 2) {
             panelButton(
                 title: host ? "Apps" : "Network",
                 symbol: host ? "square.grid.2x2" : "list.bullet",
@@ -75,11 +85,11 @@ struct AtlasTopBar: View {
         .padding(3)
         .background(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.rgba("0f0805", 0.62))
+                .fill(chipFill)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(Palette.text.opacity(0.11), lineWidth: 1)
+                .strokeBorder(line, lineWidth: 1)
         )
     }
 
@@ -105,16 +115,16 @@ struct AtlasTopBar: View {
                 if !metrics.tiny {
                     Text(Format.compact(count))
                         .font(.atlasMono(9, .regular))
-                        .foregroundColor(active ? accent.opacity(0.72) : Palette.dim.color)
+                        .foregroundColor(active ? accent.opacity(0.72) : faint)
                         .padding(.leading, showsPanelLabel ? 5 : 0)
                         .overlay(alignment: .leading) {
                             if showsPanelLabel {
-                                Rectangle().fill(Palette.text.opacity(0.062)).frame(width: 1)
+                                Rectangle().fill(subtleLine).frame(width: 1)
                             }
                         }
                 }
             }
-            .foregroundColor(active ? accent.color : Palette.muted.color)
+            .foregroundColor(active ? accent.color : muted)
             .padding(.horizontal, 7)
             .frame(height: 32)
             .background(
@@ -128,12 +138,19 @@ struct AtlasTopBar: View {
         }
         .buttonStyle(AtlasPlainButtonStyle())
         .help(hint)
-        .accessibilityLabel("\(title) panel, \(count) \(title == "Network" ? "devices" : "recent queries")")
+        .accessibilityLabel("\(title) panel, \(count) \(panelCountNoun(title))")
         .accessibilityValue(active ? "Open" : "Closed")
         .accessibilityAddTraits(active ? .isSelected : [])
     }
 
     private var showsPanelLabel: Bool { !metrics.compact }
+
+    private func panelCountNoun(_ title: String) -> String {
+        if host {
+            return title == "Apps" ? "apps" : "domains"
+        }
+        return title == "Network" ? "devices" : "recent queries"
+    }
 
     private func toggleNetwork() {
         runtime.filterOpen = false
@@ -161,14 +178,14 @@ struct AtlasTopBar: View {
                     Text(runtime.displayedGlobe == .host
                          ? "\(Format.compact(runtime.hostSnapshot.apps.count)) apps"
                          : runtime.devicePresenceText)
-                    Circle().fill(Palette.faint.color).frame(width: 2, height: 2)
+                    Circle().fill(faint).frame(width: 2, height: 2)
                     Text(runtime.displayedGlobe == .host
                          ? "\(Format.compact(runtime.hostSnapshot.domains.count)) domains"
                          : "\(Format.compact(runtime.windowStats.destinations)) destinations")
                 }
                 .font(.atlasMono(7, .regular))
                 .tracking(7 * 0.09)
-                .foregroundColor(Palette.faint.color)
+                .foregroundColor(faint)
             }
         }
     }
@@ -208,7 +225,7 @@ struct AtlasTopBar: View {
             Text(runtime.clock)
                 .font(.atlasMono(7.5, .regular))
                 .tracking(7.5 * 0.06)
-                .foregroundColor(Palette.text2.color)
+                .foregroundColor(ink2)
                 .monospacedDigit()
         }
         .padding(.horizontal, 11)
@@ -226,26 +243,27 @@ struct AtlasTopBar: View {
     }
 
     private var hostPill: some View {
-        HStack(spacing: 8) {
+        let tone = runtime.hostPaused ? Palette.hostOut : Palette.host
+        return HStack(spacing: 8) {
             Circle()
-                .fill(Palette.host.color)
+                .fill(tone.color)
                 .frame(width: 4, height: 4)
-                .shadow(color: Palette.host.opacity(0.8), radius: 3.5)
+                .shadow(color: tone.opacity(0.8), radius: 3.5)
                 .opacity(runtime.hostPaused ? 1 : (livePulse ? 1 : 0.32))
-            Text("HOST")
+            Text(runtime.hostPaused ? "PAUSED" : "HOST")
                 .font(.atlasMono(7.5, .regular))
                 .tracking(7.5 * 0.13)
-                .foregroundColor(Palette.host.color)
+                .foregroundColor(tone.color)
             Text(runtime.clock)
                 .font(.atlasMono(7.5, .regular))
                 .tracking(7.5 * 0.06)
-                .foregroundColor(Palette.text2.color)
+                .foregroundColor(ink2)
                 .monospacedDigit()
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 5)
         .background(Capsule().fill(Color.rgba("081416", 0.35)))
-        .overlay(Capsule().strokeBorder(Palette.host.opacity(0.24), lineWidth: 1))
+        .overlay(Capsule().strokeBorder(tone.opacity(0.24), lineWidth: 1))
         .onAppear {
             withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { livePulse = true }
         }
@@ -264,19 +282,18 @@ struct AtlasTopBar: View {
             helpButton
             settingsButton
         }
-        .padding(.top, 2)
+        .padding(.top, 20)
         .fixedSize(horizontal: true, vertical: false)
     }
 
     private var topDivider: some View {
         Rectangle()
-            .fill(Palette.text.opacity(0.08))
+            .fill(hairline)
             .frame(width: 1, height: 18)
             .padding(.horizontal, 1)
     }
 
     private var sourceChip: some View {
-        let host = runtime.displayedGlobe == .host
         let tone = host ? Palette.host : (runtime.isLiveSource ? Palette.signal : Palette.gold)
         return Button {
             runtime.helpOpen = false
@@ -295,7 +312,7 @@ struct AtlasTopBar: View {
                     Text(host ? "THIS MAC" : (runtime.isLiveSource ? "PI-HOLE" : "DEMO"))
                         .font(.atlasMono(7, .regular))
                         .tracking(7 * 0.12)
-                        .foregroundColor(host ? Palette.host.color : Palette.muted.color)
+                        .foregroundColor(host ? Palette.host.color : muted)
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
                 }
@@ -304,11 +321,11 @@ struct AtlasTopBar: View {
             .padding(.horizontal, metrics.showSourceLabel ? 10 : 8)
             .background(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(Color.rgba("110906", 0.68))
+                    .fill(chipFillStrong)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .strokeBorder(Palette.text.opacity(0.11), lineWidth: 1)
+                    .strokeBorder(line, lineWidth: 1)
             )
         }
         .buttonStyle(AtlasPlainButtonStyle())
@@ -396,20 +413,20 @@ struct AtlasTopBar: View {
             runtime.commandOpen = true
         } label: {
             HStack(spacing: 7) {
-                SearchGlyph(size: 12, color: Palette.dim.color)
+                SearchGlyph(size: 12, color: muted)
                 if metrics.showSearchLabel {
                     Text("SEARCH")
                         .font(.atlasMono(7.5, .regular))
                         .tracking(7.5 * 0.08)
-                        .foregroundColor(Palette.dim.color)
+                        .foregroundColor(muted)
                     Text("⌘K")
                         .font(.atlasMono(6.5, .regular))
-                        .foregroundColor(Palette.faint.color)
+                        .foregroundColor(faint)
                         .padding(.horizontal, 4)
                         .padding(.vertical, 1)
                         .overlay(
                             RoundedRectangle(cornerRadius: 3)
-                                .strokeBorder(Palette.text.opacity(0.062), lineWidth: 1)
+                                .strokeBorder(line, lineWidth: 1)
                         )
                 }
             }
@@ -417,15 +434,16 @@ struct AtlasTopBar: View {
             .padding(.horizontal, 11)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.rgba("0f0805", 0.62))
+                    .fill(chipFill)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .strokeBorder(Palette.text.opacity(0.11), lineWidth: 1)
+                    .strokeBorder(line, lineWidth: 1)
             )
         }
         .buttonStyle(AtlasPlainButtonStyle())
-        .accessibilityLabel("Search devices, destinations and actions")
+        .accessibilityLabel(host ? "Search apps, domains and actions"
+                                 : "Search devices, destinations and actions")
     }
 
     private var helpButton: some View {
@@ -437,21 +455,21 @@ struct AtlasTopBar: View {
         } label: {
             Text("?")
                 .font(.atlasMono(9.5, .medium))
-                .foregroundColor(runtime.helpOpen ? Palette.gold.color : Palette.muted.color)
+                .foregroundColor(runtime.helpOpen ? (host ? Palette.host.color : Palette.gold.color) : muted)
                 .frame(width: 34, height: 34)
                 .background(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(Color.rgba("0f0805", 0.62))
+                        .fill(chipFill)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .strokeBorder(runtime.helpOpen ? Palette.gold.opacity(0.26) : Palette.text.opacity(0.11),
+                        .strokeBorder(runtime.helpOpen ? (host ? Palette.host.opacity(0.26) : Palette.gold.opacity(0.26)) : line,
                                       lineWidth: 1)
                 )
         }
         .buttonStyle(AtlasPlainButtonStyle())
-        .help("How to read this field")
-        .accessibilityLabel("How to read this field")
+        .help(host ? "How to read this Mac" : "How to read this field")
+        .accessibilityLabel(host ? "How to read this Mac" : "How to read this field")
         .accessibilityValue(runtime.helpOpen ? "Open" : "Closed")
     }
 
@@ -463,15 +481,15 @@ struct AtlasTopBar: View {
         } label: {
             Image(systemName: "gearshape")
                 .font(.system(size: 13.5, weight: .regular))
-                .foregroundColor(Palette.muted.color)
+                .foregroundColor(muted)
                 .frame(width: 34, height: 34)
                 .background(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(Color.rgba("0f0805", 0.62))
+                        .fill(chipFill)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .strokeBorder(Palette.text.opacity(0.11), lineWidth: 1)
+                        .strokeBorder(line, lineWidth: 1)
                 )
         }
         .buttonStyle(AtlasPlainButtonStyle())

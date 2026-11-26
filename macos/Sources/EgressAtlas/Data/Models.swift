@@ -1,8 +1,7 @@
 import Foundation
 
-// The product model from app/src/data/network.js. Reference types are used for
-// the graph because the live source mutates counts on devices, destinations
-// and edges in place, exactly like the web model.
+// The product graph uses reference types because the live source mutates
+// counts on devices, destinations and edges in place.
 
 enum DNSStatus: String, Hashable {
     case allowed

@@ -68,7 +68,7 @@ struct NetworkRail: View {
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
                         .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(Palette.text.opacity(0.062), lineWidth: 1))
-                    RailCloseButton(left: true) { runtime.leftRailOpen = false }
+                    RailCloseButton(action: { runtime.leftRailOpen = false }, left: true)
                 }
                 Text(index == 0 ? "Devices" : "Destinations")
                     .font(.atlasSans(metrics.railHeadTitleSize, .medium))
@@ -211,18 +211,26 @@ struct NetworkRail: View {
 struct RailCloseButton: View {
     var action: () -> Void
     var left: Bool = true
+    var host: Bool = false
     @State private var hover = false
     var body: some View {
         Button(action: action) {
-            ChevronGlyph(left: left, size: 12, color: hover ? Palette.gold.color : Palette.dim.color)
+            ChevronGlyph(left: left, size: 12,
+                         color: hover ? (host ? Palette.host.color : Palette.gold.color)
+                                      : (host ? Palette.hostMeta.color : Palette.dim.color))
                 .frame(width: 28, height: 28)
-                .background(RoundedRectangle(cornerRadius: 5).fill(Color.rgba("090503", 0.28)))
+                .background(RoundedRectangle(cornerRadius: 5)
+                    .fill(host ? Color.rgba("050d11", 0.34) : Color.rgba("090503", 0.28)))
                 .overlay(RoundedRectangle(cornerRadius: 5)
-                    .strokeBorder(hover ? Palette.gold.opacity(0.28) : Palette.text.opacity(0.062), lineWidth: 1))
+                    .strokeBorder(hover ? (host ? Palette.host.opacity(0.28) : Palette.gold.opacity(0.28))
+                                        : (host ? Palette.hostText.opacity(0.08) : Palette.text.opacity(0.062)),
+                                  lineWidth: 1))
         }
         .buttonStyle(AtlasPlainButtonStyle())
         .onHover { hover = $0 }
-        .accessibilityLabel(left ? "Close network panel" : "Close queries panel")
+        .accessibilityLabel(host
+                            ? (left ? "Close apps panel" : "Close domains panel")
+                            : (left ? "Close network panel" : "Close queries panel"))
     }
 }
 
@@ -561,7 +569,7 @@ struct TrafficRail: View {
                             .tracking(7 * 0.12)
                             .foregroundColor(runtime.isReplay ? Palette.gold.color : Palette.sage.color)
                     }
-                    RailCloseButton(left: false) { runtime.rightRailOpen = false }
+                    RailCloseButton(action: { runtime.rightRailOpen = false }, left: false)
                 }
                 Text(runtime.isReplay ? "Replay queries" : "Recent queries")
                     .font(.atlasSans(metrics.railHeadTitleSize, .medium))

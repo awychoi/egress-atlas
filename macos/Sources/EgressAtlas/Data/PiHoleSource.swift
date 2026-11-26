@@ -2,7 +2,7 @@ import Foundation
 
 /// Live query poller. The heavy six-hour graph is built once at connect time;
 /// this class only imports new rows into that bounded graph and counts anything
-/// outside the top-N snapshot as off-graph, matching the web source's contract.
+/// outside the top-N snapshot as off-graph.
 final class PiHoleSource: AtlasTrafficSource {
     let network: DemoNetwork
     let client: PiHoleClient

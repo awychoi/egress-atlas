@@ -9,7 +9,7 @@ struct EffectMeta {
     let kind: String
 }
 
-/// app/src/lab/registry.js
+/// Motion study catalogue.
 enum Effects {
     static let impacts: [EffectMeta] = [
         EffectMeta(id: "eclipse", key: "A", name: "Eclipse", tagline: "Razor halo · cyan afterimage", duration: 1.38, kind: "impact"),

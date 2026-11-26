@@ -8,19 +8,37 @@ struct SettingsPanel: View {
     @State private var sourceInsecure = false
     @State private var sourceFieldsLoaded = false
 
+    private var hostMode: Bool { runtime.displayedGlobe == .host }
+    private var accent: SRGB { hostMode ? Palette.host : Palette.gold }
+    private var ink: Color { hostMode ? Palette.hostText.color : Palette.text.color }
+    private var ink2: Color { hostMode ? Palette.hostText2.color : Palette.text2.color }
+    private var muted: Color { hostMode ? Palette.hostMuted.color : Palette.muted.color }
+    private var dim: Color { hostMode ? Palette.hostMeta.color : Palette.dim.color }
+    private var faint: Color { hostMode ? Palette.hostFaint.color : Palette.faint.color }
+    private var inactiveTone: SRGB { hostMode ? Palette.hostMeta : Palette.dim }
+    private var warn: SRGB { hostMode ? Palette.hostFault : Palette.coral }
+    private var okay: SRGB { hostMode ? Palette.hostMint : Palette.sage }
+    private var divider: Color { hostMode ? Palette.hostText.opacity(0.09) : Palette.text.opacity(0.062) }
+    private var dividerLine: some View { Hairline(color: divider) }
+    private var visibleTabs: [SettingsTab] {
+        hostMode ? [.host, .display, .about] : SettingsTab.allCases
+    }
+    private var activeTab: SettingsTab {
+        if visibleTabs.contains(runtime.settingsTab) { return runtime.settingsTab }
+        return hostMode ? .host : .source
+    }
+
+    private func insetFill(_ alpha: Double) -> Color {
+        hostMode ? Color.rgba("050d11", max(0.24, alpha)) : Color.rgba("090503", alpha)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
             tabBar
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 0) {
-                    switch runtime.settingsTab {
-                    case .source: sourceSection
-                    case .display: fieldSection
-                    case .motion: motionSection
-                    case .host: hostSection
-                    case .about: aboutSection
-                    }
+                    activeContent
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 14)
@@ -31,10 +49,17 @@ struct SettingsPanel: View {
         .frame(maxHeight: metrics.mediumHeight
                ? max(280, metrics.height - metrics.railTop - 28)
                : max(280, metrics.height - metrics.railTop - metrics.railBottom + 12))
-        .background(Palette.deep.color.opacity(0.985))
-        .background(WarmGlass(radius: 12, strong: true))
+        .background(hostMode ? Palette.hostBg.color.opacity(0.985) : Palette.deep.color.opacity(0.985))
+        .background {
+            if hostMode {
+                CoolGlass(radius: 12, strong: true)
+            } else {
+                WarmGlass(radius: 12, strong: true)
+            }
+        }
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Palette.text.opacity(0.11), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 12)
+            .strokeBorder(hostMode ? Palette.hostText.opacity(0.11) : ink.opacity(0.11), lineWidth: 1))
         .shadow(color: .black.opacity(0.52), radius: 40, x: 0, y: 28)
         .transition(.move(edge: .trailing).combined(with: .opacity))
         .onAppear {
@@ -55,54 +80,67 @@ struct SettingsPanel: View {
         }
     }
 
+    @ViewBuilder
+    private var activeContent: some View {
+        switch activeTab {
+        case .source: sourceSection
+        case .display:
+            if hostMode { hostDisplaySection } else { fieldSection }
+        case .motion: motionSection
+        case .host: hostSection
+        case .about: aboutSection
+        }
+    }
+
     private var header: some View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 5) {
-                Eyebrow(text: "Atlas settings", size: 8, color: Palette.muted.color, trackingEm: 0.16)
-                Text("Settings")
+                Eyebrow(text: hostMode ? "Host instrument" : "Atlas settings",
+                        size: 8, color: muted, trackingEm: 0.16)
+                Text(hostMode ? "Host settings" : "Settings")
                     .font(.atlasSans(22, .medium))
                     .tracking(-22 * 0.03)
-                    .foregroundColor(Palette.text.color)
+                    .foregroundColor(ink)
             }
             Spacer()
             Button {
                 runtime.settingsOpen = false
             } label: {
-                CloseGlyph(size: 12, color: Palette.muted.color)
+                CloseGlyph(size: 12, color: muted)
                     .frame(width: 28, height: 28)
-                    .background(RoundedRectangle(cornerRadius: 5).fill(Color.rgba("090503", 0.28)))
+                    .background(RoundedRectangle(cornerRadius: 5).fill(insetFill(0.28)))
                     .overlay(RoundedRectangle(cornerRadius: 5)
-                        .strokeBorder(Palette.text.opacity(0.062), lineWidth: 1))
+                        .strokeBorder(ink.opacity(0.062), lineWidth: 1))
             }
             .buttonStyle(AtlasPlainButtonStyle())
         }
         .padding(.horizontal, 15)
         .padding(.top, 15)
         .padding(.bottom, 12)
-        .overlay(alignment: .bottom) { Hairline() }
+        .overlay(alignment: .bottom) { dividerLine }
     }
 
     private var tabBar: some View {
         HStack(spacing: 2) {
-            ForEach(SettingsTab.allCases, id: \.self) { item in
-                let active = runtime.settingsTab == item
+            ForEach(visibleTabs, id: \.self) { item in
+                let active = activeTab == item
                 Button {
                     runtime.settingsTab = item
                 } label: {
                     Text(item.title.uppercased())
                         .font(.atlasMono(7.5, .regular))
                         .tracking(7.5 * 0.09)
-                        .foregroundColor(active ? Palette.gold.color : Palette.dim.color)
+                        .foregroundColor(active ? accent.color : dim)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 6)
                         .padding(.horizontal, 6)
                         .background(
                             RoundedRectangle(cornerRadius: 4)
-                                .fill(active ? Palette.gold.opacity(0.075) : .clear)
+                                .fill(active ? accent.opacity(0.075) : .clear)
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 4)
-                                .strokeBorder(active ? Palette.gold.opacity(0.12) : .clear, lineWidth: 1)
+                                .strokeBorder(active ? accent.opacity(0.12) : .clear, lineWidth: 1)
                         )
                         .contentShape(Rectangle())
                 }
@@ -112,12 +150,12 @@ struct SettingsPanel: View {
             }
         }
         .padding(2)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.rgba("090503", 0.32)))
-        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Palette.text.opacity(0.062), lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 6).fill(insetFill(0.32)))
+        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ink.opacity(0.062), lineWidth: 1))
         .padding(.horizontal, 12)
         .padding(.top, 2)
         .padding(.bottom, 10)
-        .overlay(alignment: .bottom) { Hairline() }
+        .overlay(alignment: .bottom) { dividerLine }
     }
 
     private var sourceSection: some View {
@@ -126,36 +164,36 @@ struct SettingsPanel: View {
 
             HStack(alignment: .top, spacing: 9) {
                 Circle()
-                    .fill(runtime.isLiveSource ? Palette.signal.color : Palette.gold.color)
+                    .fill(runtime.isLiveSource ? Palette.signal.color : accent.color)
                     .frame(width: 7, height: 7)
-                    .shadow(color: (runtime.isLiveSource ? Palette.signal : Palette.gold).opacity(0.55), radius: 5)
+                    .shadow(color: (runtime.isLiveSource ? Palette.signal : accent).opacity(0.55), radius: 5)
                     .padding(.top, 4)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(runtime.isLiveSource ? "Pi-hole live" : "Demo source")
                         .font(.atlasSans(10.5, .medium))
-                        .foregroundColor(Palette.text2.color)
+                        .foregroundColor(ink2)
                     Text(runtime.isLiveSource
                          ? "\(runtime.sourceEndpoint ?? "Pi-hole") · polling every 1.5 s"
                          : "Deterministic local traffic. Connect a Pi-hole to replace it.")
                         .font(.atlasSans(8.5, .regular))
                         .lineSpacing(1.5)
-                        .foregroundColor(Palette.dim.color)
+                        .foregroundColor(dim)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.vertical, 9)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.rgba("080503", 0.32)))
-            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Palette.text.opacity(0.062), lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: 6).fill(insetFill(0.32)))
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(ink.opacity(0.062), lineWidth: 1))
             .padding(.top, 10)
 
             if runtime.sourceConnecting {
                 HStack(spacing: 8) {
-                    ProgressView().controlSize(.small).tint(Palette.gold.color)
+                    ProgressView().controlSize(.small).tint(accent.color)
                     Text("Connecting to Pi-hole…")
                         .font(.atlasSans(10, .regular))
-                        .foregroundColor(Palette.muted.color)
+                        .foregroundColor(muted)
                 }
                 .padding(.top, 12)
             }
@@ -164,18 +202,18 @@ struct SettingsPanel: View {
                 HStack(alignment: .top, spacing: 7) {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(Palette.coral.color)
+                        .foregroundColor(warn.color)
                         .padding(.top, 2)
                     Text(error)
                         .font(.atlasSans(9.5, .regular))
                         .lineSpacing(1.5)
-                        .foregroundColor(Palette.coral.color)
+                        .foregroundColor(warn.color)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.horizontal, 9)
                 .padding(.vertical, 8)
-                .background(RoundedRectangle(cornerRadius: 5).fill(Palette.coral.opacity(0.07)))
-                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Palette.coral.opacity(0.2), lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: 5).fill(warn.opacity(0.07)))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(warn.opacity(0.2), lineWidth: 1))
                 .padding(.top, 10)
             }
 
@@ -183,18 +221,18 @@ struct SettingsPanel: View {
                 HStack(alignment: .top, spacing: 7) {
                     Image(systemName: "key.slash")
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(Palette.gold.color)
+                        .foregroundColor(accent.color)
                         .padding(.top, 2)
                     Text(notice)
                         .font(.atlasSans(9.2, .regular))
                         .lineSpacing(1.5)
-                        .foregroundColor(Palette.muted.color)
+                        .foregroundColor(muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.horizontal, 9)
                 .padding(.vertical, 8)
-                .background(RoundedRectangle(cornerRadius: 5).fill(Palette.gold.opacity(0.055)))
-                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Palette.gold.opacity(0.16), lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: 5).fill(accent.opacity(0.055)))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(accent.opacity(0.16), lineWidth: 1))
                 .padding(.top, 10)
             }
 
@@ -207,7 +245,7 @@ struct SettingsPanel: View {
             HStack(alignment: .top, spacing: 9) {
                 Image(systemName: "lock")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(Palette.dim.color)
+                    .foregroundColor(dim)
                     .padding(.top, 1)
                 Text(runtime.isLiveSource
                      ? (runtime.hasSavedPassword
@@ -218,14 +256,14 @@ struct SettingsPanel: View {
                         : "The demo source is local and deterministic. Live credentials are only requested when you connect."))
                     .font(.atlasSans(9.2, .regular))
                     .lineSpacing(1.6)
-                    .foregroundColor(Palette.dim.color)
+                    .foregroundColor(dim)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.top, 12)
             .padding(.bottom, 2)
         }
         .padding(.vertical, 13)
-        .overlay(alignment: .bottom) { Hairline() }
+        .overlay(alignment: .bottom) { dividerLine }
     }
 
     private var demoSourceForm: some View {
@@ -236,13 +274,13 @@ struct SettingsPanel: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Self-signed certificate")
                         .font(.atlasSans(10, .medium))
-                        .foregroundColor(Palette.text2.color)
+                        .foregroundColor(ink2)
                     Text("allow a local HTTPS Pi-hole certificate")
                         .font(.atlasSans(8.4, .regular))
-                        .foregroundColor(Palette.dim.color)
+                        .foregroundColor(dim)
                 }
                 Spacer()
-                TinyToggle(isOn: $sourceInsecure, label: "Allow self-signed certificate")
+                TinyToggle(isOn: $sourceInsecure, label: "Allow self-signed certificate", tone: accent)
             }
             Button {
                 runtime.connectPiHole(url: sourceURL, password: sourcePassword, insecure: sourceInsecure)
@@ -254,15 +292,15 @@ struct SettingsPanel: View {
                         .font(.atlasMono(9.5, .medium))
                         .tracking(0.7)
                 }
-                .foregroundColor(sourceURL.trimmingCharacters(in: .whitespaces).isEmpty ? Palette.faint.color : Palette.deep.color)
+                .foregroundColor(sourceURL.trimmingCharacters(in: .whitespaces).isEmpty ? faint : Palette.deep.color)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 9)
                 .background(RoundedRectangle(cornerRadius: 6)
                     .fill(sourceURL.trimmingCharacters(in: .whitespaces).isEmpty
-                          ? Palette.text.opacity(0.04)
-                          : Palette.gold.opacity(0.9)))
+                          ? ink.opacity(0.04)
+                          : accent.opacity(0.9)))
                 .overlay(RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(Palette.gold.opacity(sourceURL.trimmingCharacters(in: .whitespaces).isEmpty ? 0.08 : 0.5), lineWidth: 1))
+                    .strokeBorder(accent.opacity(sourceURL.trimmingCharacters(in: .whitespaces).isEmpty ? 0.08 : 0.5), lineWidth: 1))
             }
             .buttonStyle(AtlasPlainButtonStyle())
             .disabled(sourceURL.trimmingCharacters(in: .whitespaces).isEmpty || runtime.sourceConnecting)
@@ -277,21 +315,21 @@ struct SettingsPanel: View {
                 Text("SNAPSHOT")
                     .font(.atlasMono(7, .regular))
                     .tracking(7 * 0.08)
-                    .foregroundColor(Palette.faint.color)
+                    .foregroundColor(faint)
                 Spacer()
                 Text(runtime.sourceSnapshotWindow ?? "6 hours")
                     .font(.atlasMono(8, .regular))
-                    .foregroundColor(Palette.text2.color)
+                    .foregroundColor(ink2)
             }
             HStack(spacing: 8) {
                 Text("SELECTED")
                     .font(.atlasMono(7, .regular))
                     .tracking(7 * 0.08)
-                    .foregroundColor(Palette.faint.color)
+                    .foregroundColor(faint)
                 Spacer()
                 Text("\(Format.compact(runtime.network.devices.count)) devices · \(Format.compact(runtime.network.destinations.count)) destinations")
                     .font(.atlasMono(8, .regular))
-                    .foregroundColor(Palette.text2.color)
+                    .foregroundColor(ink2)
                     .lineLimit(1)
             }
             VStack(alignment: .leading, spacing: 5) {
@@ -299,11 +337,11 @@ struct SettingsPanel: View {
                     Text("POPULATION")
                         .font(.atlasMono(7, .regular))
                         .tracking(7 * 0.08)
-                        .foregroundColor(Palette.faint.color)
+                        .foregroundColor(faint)
                     Spacer()
                     Text(runtime.livePopulation.title.uppercased())
                         .font(.atlasMono(8, .regular))
-                        .foregroundColor(Palette.gold.color)
+                        .foregroundColor(accent.color)
                 }
                 HStack(spacing: 1) {
                     ForEach(LivePopulation.allCases) { population in
@@ -314,22 +352,22 @@ struct SettingsPanel: View {
                     }
                 }
                 .padding(2)
-                .background(RoundedRectangle(cornerRadius: 5).fill(Color.rgba("090503", 0.35)))
-                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Palette.text.opacity(0.062), lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: 5).fill(insetFill(0.35)))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ink.opacity(0.062), lineWidth: 1))
                 Text(runtime.livePopulation.detail)
                     .font(.atlasSans(8.2, .regular))
-                    .foregroundColor(Palette.dim.color)
+                    .foregroundColor(dim)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("History playback reads the selected range from the on-disk query database and keeps the current graph.")
                     .font(.atlasSans(8.2, .regular))
-                    .foregroundColor(Palette.dim.color)
+                    .foregroundColor(dim)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.top, 2)
             HStack(spacing: 5) {
-                MiniActionButton(title: "Refresh") { runtime.refreshLiveSource() }
-                MiniActionButton(title: "Use demo") { runtime.useDemoSource() }
-                MiniActionButton(title: "Disconnect", danger: true) { runtime.disconnectPiHole() }
+                MiniActionButton(title: "Refresh", accent: accent) { runtime.refreshLiveSource() }
+                MiniActionButton(title: "Use demo", accent: accent) { runtime.useDemoSource() }
+                MiniActionButton(title: "Disconnect", danger: true, accent: accent, dangerTone: warn) { runtime.disconnectPiHole() }
             }
             .padding(.top, 2)
         }
@@ -341,7 +379,7 @@ struct SettingsPanel: View {
         VStack(alignment: .leading, spacing: 5) {
             Text(label)
                 .font(.atlasSans(9.4, .medium))
-                .foregroundColor(Palette.text2.color)
+                .foregroundColor(ink2)
             Group {
                 if secure {
                     SecureField(placeholder, text: text)
@@ -351,11 +389,11 @@ struct SettingsPanel: View {
             }
             .textFieldStyle(.plain)
             .font(.atlasSans(10.5, .regular))
-            .foregroundColor(Palette.text.color)
+            .foregroundColor(ink)
             .padding(.horizontal, 9)
             .padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 5).fill(Color.rgba("080503", 0.5)))
-            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Palette.text.opacity(0.1), lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: 5).fill(insetFill(0.5)))
+            .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ink.opacity(0.1), lineWidth: 1))
             .disableAutocorrection(true)
             .accessibilityLabel(label)
         }
@@ -363,12 +401,14 @@ struct SettingsPanel: View {
 
     private var hostSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            SectionKicker(title: "Host traffic", value: runtime.hostAvailable ? "live" : "unavailable")
+            SectionKicker(title: "Host traffic",
+                          value: runtime.hostDemoActive ? "demo" : (runtime.hostAvailable ? "live" : "unavailable"),
+                          color: Palette.hostMuted.color, valueColor: Palette.hostFaint.color)
             HStack(alignment: .top, spacing: 9) {
                 Circle()
-                    .fill(runtime.hostAvailable ? Palette.host.color : Palette.coral.color)
+                    .fill(runtime.hostAvailable ? Palette.host.color : warn.color)
                     .frame(width: 7, height: 7)
-                    .shadow(color: (runtime.hostAvailable ? Palette.host : Palette.coral).opacity(0.55), radius: 5)
+                    .shadow(color: (runtime.hostAvailable ? Palette.host : warn).opacity(0.55), radius: 5)
                     .padding(.top, 4)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("This Mac")
@@ -381,14 +421,14 @@ struct SettingsPanel: View {
                     if let note = runtime.hostNote {
                         Text(note)
                             .font(.atlasSans(8.5, .regular))
-                            .foregroundColor(Palette.coral.color)
+                            .foregroundColor(warn.color)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
             .padding(.top, 8)
 
-            Text("Reads this Mac's own socket counters. No packet capture, no payloads, no history. It never captures this Mac's traffic.")
+            Text("Reads this Mac's own socket counters. No packet capture, no payloads, no history. It never reads another device's traffic.")
                 .font(.atlasSans(9, .regular))
                 .lineSpacing(2)
                 .foregroundColor(Palette.hostMuted.color)
@@ -407,7 +447,7 @@ struct SettingsPanel: View {
                 Spacer()
                 TinyToggle(isOn: Binding(get: { !runtime.hostPaused },
                                          set: { runtime.setHostPaused(!$0) }),
-                           label: "Host monitoring")
+                           label: "Host monitoring", tone: accent)
             }
             .padding(.vertical, 8)
 
@@ -428,7 +468,7 @@ struct SettingsPanel: View {
                     Spacer()
                     TinyToggle(isOn: Binding(get: { runtime.hostScopes.contains(scope) },
                                              set: { runtime.setHostScope(scope, enabled: $0) }),
-                               label: "\(scope.title) traffic")
+                               label: "\(scope.title) traffic", tone: accent)
                 }
                 .padding(.vertical, 5)
             }
@@ -460,6 +500,77 @@ struct SettingsPanel: View {
         }
     }
 
+    private var hostDisplaySection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            SectionKicker(title: "Display", value: "host globe",
+                          color: Palette.hostMuted.color, valueColor: Palette.hostFaint.color)
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Auto orbit")
+                        .font(.atlasSans(10.5, .medium))
+                        .foregroundColor(ink2)
+                    Text("coast the camera when idle (O)")
+                        .font(.atlasSans(8.5, .regular))
+                        .foregroundColor(dim)
+                }
+                Spacer()
+                TinyToggle(isOn: Binding(get: { runtime.spinEnabled },
+                                         set: { runtime.setSpin($0) }),
+                           label: "Auto-orbit", tone: accent)
+            }
+            .padding(.vertical, 7)
+
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Window drag spins globe")
+                        .font(.atlasSans(10.5, .medium))
+                        .foregroundColor(ink2)
+                    Text(runtime.windowDragSpinsGlobe
+                         ? "moving the window orbits the field"
+                         : "off: moving the window leaves the field still")
+                        .font(.atlasSans(8.5, .regular))
+                        .foregroundColor(dim)
+                }
+                Spacer()
+                TinyToggle(isOn: Binding(get: { runtime.windowDragSpinsGlobe },
+                                         set: { runtime.setWindowDragSpinsGlobe($0) }),
+                           label: "Window drag spins globe", tone: accent)
+            }
+            .padding(.vertical, 7)
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Labels")
+                    .font(.atlasSans(10.5, .medium))
+                    .foregroundColor(ink2)
+                Text("brief labels on selection, all host bodies, or never")
+                    .font(.atlasSans(8.5, .regular))
+                    .foregroundColor(dim)
+                    .padding(.top, 2)
+                HStack(spacing: 1) {
+                    ForEach(LabelMode.allCases, id: \.self) { mode in
+                        SegmentButton(title: mode.rawValue, active: runtime.labelMode == mode,
+                                      accent: accent, inactive: inactiveTone, activeText: accent) {
+                            runtime.setLabelMode(mode)
+                        }
+                    }
+                }
+                .padding(2)
+                .background(RoundedRectangle(cornerRadius: 5).fill(insetFill(0.35)))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ink.opacity(0.062), lineWidth: 1))
+                .padding(.top, 7)
+            }
+            .padding(.vertical, 7)
+
+            Text("HOST is live only. There is no history window, replay transport or alias editor in this mode; the field always reflects this Mac's current sockets.")
+                .font(.atlasSans(8.5, .regular))
+                .lineSpacing(2)
+                .foregroundColor(faint)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 8)
+        }
+        .padding(.top, 12)
+    }
+
     private var fieldSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionKicker(title: "Display", value: "globe")
@@ -469,13 +580,13 @@ struct SettingsPanel: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Auto orbit")
                         .font(.atlasSans(10.5, .medium))
-                        .foregroundColor(Palette.text2.color)
+                        .foregroundColor(ink2)
                     Text("coast the camera when idle (O)")
                         .font(.atlasSans(8.5, .regular))
-                        .foregroundColor(Palette.dim.color)
+                        .foregroundColor(dim)
                 }
                 Spacer()
-                TinyToggle(isOn: Binding(get: { runtime.spinEnabled }, set: { runtime.setSpin($0) }), label: "Auto-orbit")
+                TinyToggle(isOn: Binding(get: { runtime.spinEnabled }, set: { runtime.setSpin($0) }), label: "Auto-orbit", tone: accent)
             }
             .padding(.vertical, 7)
 
@@ -483,17 +594,17 @@ struct SettingsPanel: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Window drag spins globe")
                         .font(.atlasSans(10.5, .medium))
-                        .foregroundColor(Palette.text2.color)
+                        .foregroundColor(ink2)
                     Text(runtime.windowDragSpinsGlobe
                          ? "moving the window orbits the field"
                          : "off: moving the window leaves the field still")
                         .font(.atlasSans(8.5, .regular))
-                        .foregroundColor(Palette.dim.color)
+                        .foregroundColor(dim)
                 }
                 Spacer()
                 TinyToggle(isOn: Binding(get: { runtime.windowDragSpinsGlobe },
                                          set: { runtime.setWindowDragSpinsGlobe($0) }),
-                           label: "Window drag spins globe")
+                           label: "Window drag spins globe", tone: accent)
             }
             .padding(.vertical, 7)
 
@@ -501,45 +612,46 @@ struct SettingsPanel: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Show domain with alias")
                         .font(.atlasSans(10.5, .medium))
-                        .foregroundColor(Palette.text2.color)
+                        .foregroundColor(ink2)
                     Text(runtime.showAliasWithAddress
                          ? "destination cards show the alias plus the original domain"
                          : "destination cards show only the alias, or the domain when unset")
                         .font(.atlasSans(8.5, .regular))
-                        .foregroundColor(Palette.dim.color)
+                        .foregroundColor(dim)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
                 TinyToggle(isOn: Binding(get: { runtime.showAliasWithAddress },
                                          set: { runtime.setShowAliasWithAddress($0) }),
-                           label: "Show domain with alias")
+                           label: "Show domain with alias", tone: accent)
             }
             .padding(.vertical, 7)
 
             VStack(alignment: .leading, spacing: 0) {
                 Text("Labels")
                     .font(.atlasSans(10.5, .medium))
-                    .foregroundColor(Palette.text2.color)
+                    .foregroundColor(ink2)
                 Text("brief labels on events, selection, all, or never")
                     .font(.atlasSans(8.5, .regular))
-                    .foregroundColor(Palette.dim.color)
+                    .foregroundColor(dim)
                     .padding(.top, 2)
                 HStack(spacing: 1) {
                     ForEach(LabelMode.allCases, id: \.self) { mode in
-                        SegmentButton(title: mode.rawValue, active: runtime.labelMode == mode) {
+                        SegmentButton(title: mode.rawValue, active: runtime.labelMode == mode,
+                                      accent: accent, inactive: inactiveTone, activeText: accent) {
                             runtime.setLabelMode(mode)
                         }
                     }
                 }
                 .padding(2)
-                .background(RoundedRectangle(cornerRadius: 5).fill(Color.rgba("090503", 0.35)))
-                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Palette.text.opacity(0.062), lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: 5).fill(insetFill(0.35)))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ink.opacity(0.062), lineWidth: 1))
                 .padding(.top, 7)
             }
             .padding(.vertical, 7)
         }
         .padding(.vertical, 13)
-        .overlay(alignment: .bottom) { Hairline() }
+        .overlay(alignment: .bottom) { dividerLine }
     }
 
     private var motionSection: some View {
@@ -548,21 +660,22 @@ struct SettingsPanel: View {
             VStack(alignment: .leading, spacing: 0) {
                 Text("Response")
                     .font(.atlasSans(10.5, .medium))
-                    .foregroundColor(Palette.text2.color)
+                    .foregroundColor(ink2)
                 Text("the study played when a query lands")
                     .font(.atlasSans(8.5, .regular))
-                    .foregroundColor(Palette.dim.color)
+                    .foregroundColor(dim)
                     .padding(.top, 2)
                 HStack(spacing: 1) {
                     ForEach(MotionMode.allCases, id: \.self) { mode in
-                        SegmentButton(title: mode.rawValue, active: runtime.motionMode == mode) {
+                        SegmentButton(title: mode.rawValue, active: runtime.motionMode == mode,
+                                      accent: accent, inactive: inactiveTone, activeText: accent) {
                             runtime.setMotionMode(mode)
                         }
                     }
                 }
                 .padding(2)
-                .background(RoundedRectangle(cornerRadius: 5).fill(Color.rgba("090503", 0.35)))
-                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Palette.text.opacity(0.062), lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: 5).fill(insetFill(0.35)))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ink.opacity(0.062), lineWidth: 1))
                 .padding(.top, 7)
             }
             .padding(.vertical, 7)
@@ -571,34 +684,35 @@ struct SettingsPanel: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Node recoil")
                         .font(.atlasSans(10.5, .medium))
-                        .foregroundColor(Palette.text2.color)
+                        .foregroundColor(ink2)
                     Text("allowed destinations take the blast as a knockback")
                         .font(.atlasSans(8.5, .regular))
-                        .foregroundColor(Palette.dim.color)
+                        .foregroundColor(dim)
                 }
                 Spacer()
-                TinyToggle(isOn: Binding(get: { runtime.recoilEnabled }, set: { runtime.setRecoil($0) }), label: "Node recoil")
+                TinyToggle(isOn: Binding(get: { runtime.recoilEnabled }, set: { runtime.setRecoil($0) }), label: "Node recoil", tone: accent)
             }
             .padding(.vertical, 7)
 
             VStack(alignment: .leading, spacing: 0) {
                 Text("Study speed")
                     .font(.atlasSans(10.5, .medium))
-                    .foregroundColor(Palette.text2.color)
+                    .foregroundColor(ink2)
                 Text("slow the motion studies down without leaving the field")
                     .font(.atlasSans(8.5, .regular))
-                    .foregroundColor(Palette.dim.color)
+                    .foregroundColor(dim)
                     .padding(.top, 2)
                 HStack(spacing: 1) {
                     ForEach([Float(0.25), 0.5, 1, 2, 4], id: \.self) { value in
-                        SegmentButton(title: speedLabel(value), active: runtime.speed == value) {
+                        SegmentButton(title: speedLabel(value), active: runtime.speed == value,
+                                      accent: accent, inactive: inactiveTone, activeText: accent) {
                             runtime.setSpeed(value)
                         }
                     }
                 }
                 .padding(2)
-                .background(RoundedRectangle(cornerRadius: 5).fill(Color.rgba("090503", 0.35)))
-                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Palette.text.opacity(0.062), lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: 5).fill(insetFill(0.35)))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ink.opacity(0.062), lineWidth: 1))
                 .padding(.top, 7)
             }
             .padding(.vertical, 7)
@@ -607,13 +721,13 @@ struct SettingsPanel: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Auto tour")
                         .font(.atlasSans(10.5, .medium))
-                        .foregroundColor(Palette.text2.color)
+                        .foregroundColor(ink2)
                     Text("loop emergence → impact on one node (T)")
                         .font(.atlasSans(8.5, .regular))
-                        .foregroundColor(Palette.dim.color)
+                        .foregroundColor(dim)
                 }
                 Spacer()
-                TinyToggle(isOn: Binding(get: { runtime.autoTour }, set: { runtime.setAutoTour($0) }), label: "Auto tour")
+                TinyToggle(isOn: Binding(get: { runtime.autoTour }, set: { runtime.setAutoTour($0) }), label: "Auto tour", tone: accent)
             }
             .padding(.vertical, 7)
 
@@ -621,14 +735,14 @@ struct SettingsPanel: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Hit plane")
                         .font(.atlasSans(10.5, .medium))
-                        .foregroundColor(Palette.text2.color)
+                        .foregroundColor(ink2)
                     Text("overlay the perpendicular blast plane")
                         .font(.atlasSans(8.5, .regular))
-                        .foregroundColor(Palette.dim.color)
+                        .foregroundColor(dim)
                 }
                 Spacer()
                 TinyToggle(isOn: Binding(get: { runtime.showHitGeometry },
-                                         set: { runtime.setShowHitGeometry($0) }), label: "Hit plane")
+                                         set: { runtime.setShowHitGeometry($0) }), label: "Hit plane", tone: accent)
             }
             .padding(.vertical, 7)
 
@@ -637,46 +751,46 @@ struct SettingsPanel: View {
                     HStack(alignment: .firstTextBaseline) {
                         Text("Study plane")
                             .font(.atlasSans(10.5, .medium))
-                            .foregroundColor(Palette.text2.color)
+                            .foregroundColor(ink2)
                         Spacer()
                         Text(study.impactName.uppercased())
                             .font(.atlasMono(6.8, .regular))
                             .tracking(6.8 * 0.08)
-                            .foregroundColor(study.blocked ? Palette.coral.color : Palette.gold.color)
+                            .foregroundColor(study.blocked ? warn.color : accent.color)
                     }
                     Text("\(study.host) · face-on \(String(format: "%.0f", study.faceAngle))°")
                         .font(.atlasMono(7, .regular))
-                        .foregroundColor(Palette.dim.color)
+                        .foregroundColor(dim)
                     telemetryLine("Inbound", study.inboundText)
                     telemetryLine("Axis", study.axisText)
                     telemetryLine("Centre", study.centreText)
                 }
                 .padding(.horizontal, 9)
                 .padding(.vertical, 8)
-                .background(RoundedRectangle(cornerRadius: 5).fill(Color.rgba("080503", 0.4)))
-                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(Palette.text.opacity(0.062), lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: 5).fill(insetFill(0.4)))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(ink.opacity(0.062), lineWidth: 1))
                 .padding(.vertical, 7)
             }
 
             VStack(alignment: .leading, spacing: 0) {
                 Text("Preview a study")
                     .font(.atlasSans(10.5, .medium))
-                    .foregroundColor(Palette.text2.color)
+                    .foregroundColor(ink2)
                 Text("the selected destination, or the busiest one")
                     .font(.atlasSans(8.5, .regular))
-                    .foregroundColor(Palette.dim.color)
+                    .foregroundColor(dim)
                     .padding(.top, 2)
                 HStack(spacing: 5) {
-                    MiniActionButton(title: "Impact") { runtime.previewMotion("impact") }
-                    MiniActionButton(title: "Emergence") { runtime.previewMotion("birth") }
-                    MiniActionButton(title: "Erasure", danger: true) { runtime.previewMotion("death") }
+                    MiniActionButton(title: "Impact", accent: accent) { runtime.previewMotion("impact") }
+                    MiniActionButton(title: "Emergence", accent: accent) { runtime.previewMotion("birth") }
+                    MiniActionButton(title: "Erasure", danger: true, accent: accent, dangerTone: warn) { runtime.previewMotion("death") }
                 }
                 .padding(.top, 7)
             }
             .padding(.vertical, 7)
         }
         .padding(.vertical, 13)
-        .overlay(alignment: .bottom) { Hairline() }
+        .overlay(alignment: .bottom) { dividerLine }
     }
 
     private func speedLabel(_ value: Float) -> String {
@@ -692,11 +806,11 @@ struct SettingsPanel: View {
             Text(label.uppercased())
                 .font(.atlasMono(6.4, .regular))
                 .tracking(6.4 * 0.08)
-                .foregroundColor(Palette.faint.color)
+                .foregroundColor(faint)
                 .frame(width: 42, alignment: .leading)
             Text(value)
                 .font(.atlasMono(7.2, .regular))
-                .foregroundColor(Palette.muted.color)
+                .foregroundColor(muted)
                 .lineLimit(1)
         }
     }
@@ -704,12 +818,14 @@ struct SettingsPanel: View {
     private var aboutSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionKicker(title: "About", value: "v1.0")
-            BrandLockup(height: 52)
+            BrandLockup(height: 52, host: hostMode)
                 .padding(.top, 9)
-            Text("Devices on the shell, destinations inside, relationships in signal blue. All traffic stays on this machine.")
+            Text(hostMode
+                 ? "Apps on the shell, remotes inside, byte flow both ways. All traffic stays on this machine."
+                 : "Devices on the shell, destinations inside, relationships in signal blue. All traffic stays on this machine.")
                 .font(.atlasSans(9.4, .regular))
                 .lineSpacing(1.5)
-                .foregroundColor(Palette.dim.color)
+                .foregroundColor(dim)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 8)
 
@@ -721,19 +837,24 @@ struct SettingsPanel: View {
 
     private var foot: some View {
         HStack(spacing: 7) {
-            Circle().fill(Palette.sage.color).frame(width: 4, height: 4)
-                .shadow(color: Palette.sage.opacity(0.8), radius: 3)
-            Text(runtime.isLiveSource
-                 ? (runtime.hasSavedPassword ? "PI-HOLE LIVE · READ-ONLY · KEYCHAIN"
-                                            : "PI-HOLE LIVE · READ-ONLY · SESSION")
-                 : "DEMO STREAM · NO TELEMETRY · LOCAL ONLY")
+            Circle().fill(okay.color).frame(width: 4, height: 4)
+                .shadow(color: okay.opacity(0.8), radius: 3)
+            Text(hostMode
+                 ? (runtime.hostDemoActive
+                    ? "THIS MAC · DEMO SAMPLE · NO HISTORY"
+                    : (runtime.hostPaused ? "THIS MAC · PAUSED · MONITOR RUNNING"
+                                          : "THIS MAC · LIVE SOCKETS · NO HISTORY"))
+                 : (runtime.isLiveSource
+                    ? (runtime.hasSavedPassword ? "PI-HOLE LIVE · READ-ONLY · KEYCHAIN"
+                                               : "PI-HOLE LIVE · READ-ONLY · SESSION")
+                    : "DEMO STREAM · NO TELEMETRY · LOCAL ONLY"))
                 .font(.atlasMono(6.4, .regular))
                 .tracking(6.4 * 0.07)
-                .foregroundColor(Palette.faint.color)
+                .foregroundColor(faint)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 15)
         .padding(.vertical, 10)
-        .overlay(alignment: .top) { Hairline() }
+        .overlay(alignment: .top) { dividerLine }
     }
 }

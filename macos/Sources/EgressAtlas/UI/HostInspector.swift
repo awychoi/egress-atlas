@@ -22,17 +22,23 @@ struct HostInspectorPanel: View {
             }
             .padding(.horizontal, 15)
             .padding(.top, 16)
-            if let app = appContent {
-                app
-            } else if let domain = domainContent {
-                domain
-            } else {
-                Text("Selection no longer present.")
-                    .font(.atlasSans(10, .regular))
-                    .foregroundColor(Palette.hostMeta.color)
-                    .padding(15)
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 0) {
+                    if let app = appContent {
+                        app
+                    } else if let domain = domainContent {
+                        domain
+                    } else {
+                        Text("Selection no longer present.")
+                            .font(.atlasSans(10, .regular))
+                            .foregroundColor(Palette.hostMeta.color)
+                            .padding(15)
+                    }
+                    Spacer(minLength: 16)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, 14)
             }
-            Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -48,11 +54,12 @@ struct HostInspectorPanel: View {
         var grouped: [String: Double] = [:]
         for (name, rate) in domains { grouped[name, default: 0] += rate }
         let top = grouped.sorted { $0.value > $1.value }.prefix(6)
+        let displayName = runtime.hostAppDisplayName(app)
         return AnyView(VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 9) {
                 HostAppGlyph(app: app).frame(width: 32, height: 32)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(app.name)
+                    Text(displayName)
                         .font(.atlasSans(17, .medium))
                         .foregroundColor(Palette.hostText.color)
                         .lineLimit(1)
@@ -74,6 +81,13 @@ struct HostInspectorPanel: View {
             }
             .padding(.horizontal, 15)
             .padding(.top, 12)
+            AliasEditor(runtime: runtime, original: app.name,
+                        alias: runtime.hostAppAlias(app), target: .hostApp,
+                        accent: Palette.hostApp) { value in
+                runtime.setHostAppAlias(value, for: app)
+            }
+            .id("alias-host-app-\(app.id)")
+            .padding(.horizontal, 15)
             stats([
                 ("In now", Format.dataRate(app.rxPerSecond), true),
                 ("Out now", Format.dataRate(app.txPerSecond), false),
@@ -88,7 +102,7 @@ struct HostInspectorPanel: View {
                 } else {
                     ForEach(Array(top.enumerated()), id: \.offset) { pair in
                         HStack(spacing: 7) {
-                            Text(pair.element.key)
+                            Text(runtime.hostDestinationDisplayName(name: pair.element.key))
                                 .font(.atlasSans(10, .regular))
                                 .foregroundColor(Palette.hostRemote.color)
                                 .lineLimit(1)
@@ -106,7 +120,7 @@ struct HostInspectorPanel: View {
             block("Endpoints", value: "\(app.endpoints.count)") {
                 ForEach(app.endpoints.prefix(8)) { endpoint in
                     HStack(spacing: 7) {
-                        Text(endpoint.displayName)
+                        Text(runtime.hostEndpointDisplayName(endpoint))
                             .font(.atlasMono(7.2, .regular))
                             .foregroundColor(Palette.hostRemote.color)
                             .lineLimit(1)
@@ -145,8 +159,10 @@ struct HostInspectorPanel: View {
         let appNames = domain.appIDs.compactMap { appID in
             runtime.hostSnapshot.apps.first(where: { $0.id == appID })
         }
+        let displayName = runtime.hostDestinationDisplayName(domain)
+        let original = runtime.hostDestinationOriginalText(domain)
         return AnyView(VStack(alignment: .leading, spacing: 0) {
-            Text(domain.name)
+            Text(displayName)
                 .font(.atlasSans(17, .medium))
                 .foregroundColor(Palette.hostText.color)
                 .lineLimit(2)
@@ -154,21 +170,31 @@ struct HostInspectorPanel: View {
                 .padding(.horizontal, 15)
                 .padding(.top, 12)
             HStack(spacing: 5) {
-                Text("\(domain.service) · \(domain.scope.title)")
+                Text("\(domain.service) · \(domain.scope.title)" + (original.map { " · \($0)" } ?? ""))
                     .font(.atlasMono(7, .regular))
                     .foregroundColor(Palette.hostMeta.color)
-                if domain.confidence != .none || !domain.isDomain {
-                    Text(domain.confidence.label.uppercased())
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                let local = domain.scope == .loopback
+                if local || domain.confidence != .none || !domain.isDomain {
+                    Text(local ? "LOCAL" : domain.confidence.label.uppercased())
                         .font(.atlasMono(5.8, .regular))
-                        .foregroundColor(Palette.hostRemote.color)
+                        .foregroundColor(local ? Palette.hostMint.color : Palette.hostRemote.color)
                         .padding(.horizontal, 3)
                         .padding(.vertical, 1)
                         .overlay(RoundedRectangle(cornerRadius: 2)
-                            .strokeBorder(Palette.hostRemote.opacity(0.3), lineWidth: 1))
+                            .strokeBorder((local ? Palette.hostMint : Palette.hostRemote).opacity(0.3), lineWidth: 1))
                 }
             }
             .padding(.horizontal, 15)
             .padding(.top, 4)
+            AliasEditor(runtime: runtime, original: domain.name,
+                        alias: runtime.hostDestinationAlias(domain),
+                        target: .hostDestination, accent: Palette.hostRemote) { value in
+                runtime.setHostDestinationAlias(value, for: domain)
+            }
+            .id("alias-host-domain-\(domain.id)")
+            .padding(.horizontal, 15)
             stats([
                 ("In now", Format.dataRate(domain.rxPerSecond), true),
                 ("Out now", Format.dataRate(domain.txPerSecond), false),
@@ -179,7 +205,7 @@ struct HostInspectorPanel: View {
                 ForEach(appNames) { app in
                     HStack(spacing: 7) {
                         HostAppGlyph(app: app).frame(width: 16, height: 16)
-                        Text(app.name)
+                        Text(runtime.hostAppDisplayName(app))
                             .font(.atlasSans(10, .regular))
                             .foregroundColor(Palette.hostApp.color)
                             .lineLimit(1)

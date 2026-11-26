@@ -1,9 +1,7 @@
 import Foundation
 import simd
 
-// Direct port of app/src/lab/math.js plus the small vector helpers the
-// Three.js scene relied on. Keep the names close to the source so the port is
-// auditable line by line.
+// Vector, matrix and curve helpers shared by the scene and renderer.
 
 typealias Vec3 = SIMD3<Float>
 typealias Vec2 = SIMD2<Float>
@@ -45,7 +43,7 @@ let DEG: Float = 180 / .pi
 }
 
 /// The deterministic RNG that seeds every demo layout and motion study:
-/// mulberry32 from app/src/lab/math.js. Exact 32-bit JS semantics.
+/// Mulberry32 with exact 32-bit semantics.
 final class RNG {
     private var a: UInt32
 
@@ -147,7 +145,7 @@ extension Mat4 {
         Mat4(q)
     }
 
-    /// Three.js Euler default order (XYZ), R = Rx * Ry * Rz.
+    /// Euler order XYZ, R = Rx * Ry * Rz.
     static func eulerXYZ(_ x: Float, _ y: Float, _ z: Float) -> Mat4 {
         let cx = cos(x), sx = sin(x)
         let cy = cos(y), sy = sin(y)
@@ -195,7 +193,7 @@ func quaternionFromUp(to normal: Vec3) -> Quat {
     simd_quatf(from: Vec3.up, to: normal.normalized)
 }
 
-// ── Camera (Three.js PerspectiveCamera + OrbitControls target) ────────────
+// ── Camera (perspective view around an orbit target) ──────────────────────
 
 struct Camera {
     var position: Vec3
@@ -249,7 +247,7 @@ struct Camera {
     var viewProjection: Mat4 { projectionMatrix * viewMatrix }
 
     /// The camera-space depth used by the bokeh shader (positive distance in
-    /// front of the camera). This is the equivalent of Three's `viewZ`.
+    /// front of the camera). This is the camera-space depth.
     func viewDepth(of point: Vec3) -> Float {
         (point - position).dot(forward)
     }
@@ -306,7 +304,7 @@ extension Mat4 {
     }
 }
 
-// ── CatmullRom (port of Three.CatmullRomCurve3, centripetal, arc length) ──
+// ── CatmullRom (centripetal, arc-length parameterised) ───────────────────
 
 final class CatmullRom {
     let points: [Vec3]
@@ -383,7 +381,7 @@ final class CatmullRom {
             + t2 * (w3 - w2)
     }
 
-    /// Arc-length parameterisation, `u` in 0...1 (Three's getPointAt).
+    /// Arc-length parameterisation, `u` in 0...1.
     func pointAt(_ u: Float, divisions: Int = 200) -> Vec3 {
         guard points.count > 1 else { return points.first ?? .zero }
         let lengths = arcLengths(divisions: divisions)

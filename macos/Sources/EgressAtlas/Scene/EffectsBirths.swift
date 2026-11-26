@@ -1,7 +1,7 @@
 import Foundation
 import simd
 
-// Emergence studies from app/src/lab/effects/birth/*.js.
+// Emergence studies.
 
 final class SpiralEffect: EffectStudy {
     let duration: Float = 2.4

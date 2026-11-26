@@ -134,12 +134,13 @@ struct AtlasLabel: Identifiable, Equatable {
     let blocked: Bool
     let hovered: Bool
     let selected: Bool
-    let blur: CGFloat
     let size: CGSize
     let accessibilityLabel: String
     /// Which globe's palette the shared overlay paints with; DNS is the
     /// common case and needs no site-specific argument.
     var tone: GlobeKind = .dns
+    /// Camera-relative front/back focus for the globe overlay.
+    var opacity: Double = 1
 }
 
 final class LabelStore: ObservableObject {
@@ -231,7 +232,8 @@ private struct TimerEntry {
     let token: Int
 }
 
-private struct DeviceAppearanceLink {
+/// A device's shell re-entry while the wire reveal catches up.
+struct DeviceAppearanceLink {
     let device: Device
     let wire: WireView
     var t: Float = 0
@@ -255,72 +257,38 @@ final class AtlasRuntime: NSObject, ObservableObject {
     let reducedMotion: Bool
 
     // Scene
-    private let stage = GlobeStage()
-    private(set) var nodes: [NodeView] = []
-    private(set) var devices: [DeviceView] = []
-    private(set) var wires: [WireView] = []
-    private var nodeByDest: [String: NodeView] = [:]
-    private var deviceById: [String: DeviceView] = [:]
-    private var wireByKey: [String: WireView] = [:]
-    private var wireByEdge: [String: WireView] = [:]
-    private var edgeByKey: [String: Edge] = [:]
-    private let effects = EffectHost()
-    private var signals: [Signal] = []
-    private var deviceAppearanceLinks: [DeviceAppearanceLink] = []
-    private var signalCounts: [String: Int] = [:]
-    /// Cumulative local traffic by device, both directions. The layout used to
-    /// rebuild a sorted "id::id" string for every visible device pair on every
-    /// frame and scan the whole pair grid just to find the few pairs that have
-    /// activity. This sparse index preserves the exact weights while making
-    /// the per-frame layout loop proportional to active pairs, not population².
-    private var localWeights: [String: [String: Float]] = [:]
-    /// Stable network order for the sparse pull index. The original layout
-    /// visited peers in `network.devices` order; summing the few active peers
-    /// in that same order keeps the demo's floating-point layout reproducible
-    /// across launches (dictionary iteration order is not).
-    private var deviceRank: [String: Int] = [:]
-    private var localTraces: [LocalTrace] = []
-    private var ringTraces: [RingTrace] = []
-    private var pathHalo: PathHalo?
-    private var haloKey: String?
-    private var trauma: Float = 0
+    /// Owns the DNS scene graph, effects, clocks and per-frame draw list.
+    /// Created in `init` after `super.init()` because the scene needs the
+    /// runtime back-reference; the runtime owns it strongly.
+    private var dns: DnsGlobeScene!
+    /// Read forwarding for the probe, renderer and debug checks that inspect
+    /// the DNS scene through the runtime.
+    var nodes: [NodeView] { dns.nodes }
+    var devices: [DeviceView] { dns.devices }
+    var wires: [WireView] { dns.wires }
     private var timerToken = 0
     private var timers: [TimerEntry] = []
 
     // Simulation
     private(set) var camera: Camera
-    private var globeRadius: Float = 6
-    var globeRadiusForRender: Float { globeRadius }
-    private var layoutTick = 0
-    private var lastFramingTarget: Float = 6
-    private var dot = DrawList()
-    private var rng = RNG(20261116)
-    private var elapsed: Float = 0
+    var globeRadiusForRender: Float { dns.globeRadius }
+    // Read and written by the scene's layout tick.
+    var lastFramingTarget: Float = 6
+    var elapsed: Float = 0
     private var realTime: Float = 0
     private var lastRenderTime = 0.0
     private var lastSourceTime = 0.0
-    private var frameViewSize = AtlasLayout.windowDefault
+    var frameViewSize = AtlasLayout.windowDefault
     private var didFrame = false
-    private var wireClock: Float = 0
-    private var haloClock: Float = 0
     private var windowClock: Float = 0
     private var statsClock: Float = 0
     private var labelResolveClock: Float = 0
-    private var labelTimingSum: Double = 0
-    private var labelTimingMax: Double = 0
-    private var labelTimingCount = 0
-    private var dofStrength: Float = 1
+    var dofStrength: Float = 1
     private var dragging = false
     private var windowMoving = false
     private var windowMoveSettle: DispatchWorkItem?
     private var started = false
-    private var ready = false
-    private var birthScheduleStarted = false
-    private var hitCounts = (impact: 0, birth: 0, death: 0)
-    private var previewIndex = (impact: 0, birth: 0, death: 0)
-    private var lastImpact: ImpactRecord?
-    private var hitGeometryReplayAt: Float?
-    private var eventLabels: [String: Double] = [:]
+    var ready = false
     private var lastInteraction: Double = 0
     private var sourceTimer: Timer?
     private var uiTimer: Timer?
@@ -330,24 +298,17 @@ final class AtlasRuntime: NSObject, ObservableObject {
     private var activeSourcePassword: String?
     private var pulseTimer: Timer?
     private var lastPulseSecond = Int(Date().timeIntervalSince1970)
-    private var replayArchive: ReplayArchive?
-    private var replayCursor: Double = 0
-    private var replayIndex = 0
-    private var replayEmitBudget: Double = 0
-    private var replayRecent: [QueryEvent] = []
-    private var replayRequestToken = 0
-    private var replayLastPublished: Double = -1
-    private var replayRateAuto = true
+    private let replay = ReplayController()
     private var toasts: [ToastMessage] = []
     private var toastToken = 0
 
     // Orbit / camera
-    private var cameraFlight: CameraFlight?
+    var cameraFlight: CameraFlight?
     private var orbitTarget = Vec3(0, 0.15, 0)
     private var sphericalDelta = SIMD2<Float>(0, 0)
     private var orbitScale: Float = 1
     private var autoResumeAt: Double = 0
-    private var userZoomed = false
+    var userZoomed = false
     private var fitDistance: Float = 30
     private var flightDelayRemaining: Float = 0
     private var pendingFlight: (position: Vec3, target: Vec3, duration: Float, arc: Bool)?
@@ -368,6 +329,8 @@ final class AtlasRuntime: NSObject, ObservableObject {
     /// user-authored only; the Pi-hole client remains read-only.
     @Published private(set) var deviceAliases: [String: String]
     @Published private(set) var destinationAliases: [String: String]
+    @Published private(set) var hostAppAliases: [String: String]
+    @Published private(set) var hostDestinationAliases: [String: String]
     /// Alias-only cards are the default; this appends the original address.
     @Published private(set) var showAliasWithAddress: Bool
     @Published var recoilEnabled = true
@@ -450,7 +413,6 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     var labels = LabelStore()
     var hostLabels = LabelStore()
-    private var labelSizeCache: [String: CGSize] = [:]
 
     // Host globe / deck state.
     @Published private(set) var activeGlobe: GlobeKind = .dns
@@ -465,17 +427,26 @@ final class AtlasRuntime: NSObject, ObservableObject {
     @Published private(set) var hostNote: String?
     @Published private(set) var hostDomainStatus: String?
     @Published private(set) var hostPaused = false
+    /// True while the deterministic HOST sample is driving both the HOST
+    /// globe and its chrome (demo source, not the live socket monitor).
+    @Published private(set) var hostDemoActive = false
+    /// UI-facing scope cache. The sampler queue can be busy inside nettop for
+    /// hundreds of milliseconds, so views must never wait on it just to read
+    /// a scope set.
+    @Published private(set) var hostScopes: Set<HostScope> = [.internet, .lan, .vpn]
     let hostScene: HostGlobeScene
     private let host: HostInstrument
     /// Headless tools opt back into the offline demo graph; the shipping app
     /// shows an empty DNS globe until a live Pi-hole is connected.
     private let allowsDemoGeometry = !AtlasPreferences.persists
     private var demoPreview = false
-    private var dnsHasVisualData: Bool { isLiveSource || allowsDemoGeometry || demoPreview }
+    private var hostDemoTimer: Timer?
+    private var latestLiveHostSnapshot: HostSnapshot?
+    var dnsHasVisualData: Bool { isLiveSource || allowsDemoGeometry || demoPreview }
     private var deckTo: GlobeKind = .dns
     private var deckProgress: Float = 0
     private var deckDuration: Float = 1.45
-    private var deckActive = false
+    var deckActive = false
     private var rearWorldOffset = Vec3.zero
     private var rearOrbitAxis = Vec3(0.55, 1, 0.28).normalized
     private var deckWorldBackground = Vec3.zero
@@ -497,7 +468,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
     override init() {
         let scene = HostGlobeScene()
         hostScene = scene
-        host = HostInstrument(scene: scene)
+        host = HostInstrument()
         let seed = 20261116
         self.seed = seed
         let demoNetwork = DemoNetwork(seed: seed)
@@ -508,10 +479,20 @@ final class AtlasRuntime: NSObject, ObservableObject {
         windowDragSpinsGlobe = AtlasPreferences.windowDragSpinsGlobe ?? false
         deviceAliases = AtlasPreferences.deviceAliases
         destinationAliases = AtlasPreferences.destinationAliases
-        showAliasWithAddress = AtlasPreferences.showAliasWithAddress ?? false
+        let restoredHostAppAliases = AtlasPreferences.hostAppAliases
+        let restoredHostDestinationAliases = AtlasPreferences.hostDestinationAliases
+        hostAppAliases = restoredHostAppAliases
+        hostDestinationAliases = restoredHostDestinationAliases
+        let restoredShowAliasWithAddress = AtlasPreferences.showAliasWithAddress ?? false
+        showAliasWithAddress = restoredShowAliasWithAddress
+        scene.setHostAliases(apps: restoredHostAppAliases,
+                             destinations: restoredHostDestinationAliases,
+                             showBoth: restoredShowAliasWithAddress)
         motionMode = AtlasPreferences.motionMode ?? (reducedMotion ? .calm : .cinematic)
         labelMode = AtlasPreferences.labelMode ?? .selected
-        recoilEnabled = AtlasPreferences.recoil ?? true
+        let restoredRecoil = AtlasPreferences.recoil ?? true
+        recoilEnabled = restoredRecoil
+        scene.setRecoilEnabled(restoredRecoil)
         showHitGeometry = AtlasPreferences.hitPlane ?? false
         speed = Self.nearestStudySpeed(AtlasPreferences.speed)
         windowHours = Windows.normalize(AtlasPreferences.windowHours ?? Windows.defaultHours)
@@ -536,8 +517,10 @@ final class AtlasRuntime: NSObject, ObservableObject {
             + initialRight * 0.24 + initialUp * 0.12).normalized
         rearWorldOffset = initialRearDirection * max(110, fit * 3.0)
         super.init()
+        dns = DnsGlobeScene(runtime: self)
+        configureReplay()
         configureHostInstrument()
-        buildScene()
+        dns.buildScene()
         applyWindow(animate: false, initial: true)
         applyVisualState()
         updateLabels(force: true)
@@ -552,10 +535,80 @@ final class AtlasRuntime: NSObject, ObservableObject {
     deinit {
         source.stop()
         host.stop()
+        hostDemoTimer?.invalidate()
         sourceTimer?.invalidate()
         uiTimer?.invalidate()
         pulseTimer?.invalidate()
         windowMoveSettle?.cancel()
+    }
+
+    // ── replay wiring ────────────────────────────────────────────────────
+
+    /// The controller owns the engine; these closures are the only surface it
+    /// has back into the scene/source/UI. Every one captures `self` weakly so
+    /// the runtime → controller ownership stays acyclic.
+    private func configureReplay() {
+        replay.onPresentationChange = { [weak self] presentation in
+            self?.applyReplayPresentation(presentation)
+        }
+        replay.attach(ReplayController.Services(
+            nowMS: { Date().timeIntervalSince1970 * 1000 },
+            isReady: { [weak self] in self?.ready ?? false },
+            archiveSource: { [weak self] start, end in
+                guard let self else { return .unavailable }
+                if let live = self.source as? PiHoleSource {
+                    return .pihole { try await live.loadReplay(from: start, until: end) }
+                }
+                if let demo = self.source as? LiveSource {
+                    return .demo(demo.makeReplay(from: start, until: end))
+                }
+                return .unavailable
+            },
+            resolveEvent: { [weak self] event in
+                guard let self,
+                      let device = self.network.deviceById[event.deviceId],
+                      let destination = self.network.destinationById[event.destinationId],
+                      let edge = self.dns.edgeByKey["\(event.deviceId)::\(event.destinationId)"] else {
+                    return nil
+                }
+                return QueryEvent(id: event.id, ts: event.ts, device: device,
+                                  destination: destination, edge: edge, latency: event.latency)
+            },
+            playEvent: { [weak self] event in self?.handleQuery(event) },
+            clearEffects: { [weak self] in self?.clearReplayEffects() },
+            applyLiveWindow: { [weak self] in _ = self?.applyWindow(animate: false, initial: false) },
+            isPaused: { [weak self] in self?.paused ?? false },
+            setPausedFlag: { [weak self] value in self?.paused = value },
+            resumePlayback: { [weak self] in self?.setPaused(false) },
+            closeJump: { [weak self] in self?.replayJumpOpen = false },
+            isLoopEnabled: { [weak self] in self?.replayLoop ?? false },
+            setSourcePaused: { [weak self] value in self?.source.setPaused(value) },
+            noteSourceResumed: { [weak self] in self?.lastSourceTime = CACurrentMediaTime() },
+            refreshUI: { [weak self] in self?.refreshUI() },
+            showToast: { [weak self] text, tone in self?.showToast(text, tone: tone) }
+        ))
+    }
+
+    /// Copy the controller snapshot into the `@Published` replay fields SwiftUI
+    /// already observes. Compare first so a cursor-only refresh does not
+    /// invalidate the whole transport.
+    private func applyReplayPresentation(_ presentation: ReplayPresentation) {
+        if replayRangeHours != presentation.rangeHours { replayRangeHours = presentation.rangeHours }
+        if replayStart != presentation.start { replayStart = presentation.start }
+        if replayEnd != presentation.end { replayEnd = presentation.end }
+        if replayTime != presentation.time { replayTime = presentation.time }
+        if replayRate != presentation.rate { replayRate = presentation.rate }
+        if replayBuckets != presentation.buckets { replayBuckets = presentation.buckets }
+        if replayMaxBucket != presentation.maxBucket { replayMaxBucket = presentation.maxBucket }
+        if replayTotal != presentation.total { replayTotal = presentation.total }
+        if replayScanned != presentation.scanned { replayScanned = presentation.scanned }
+        if replaySkipped != presentation.skipped { replaySkipped = presentation.skipped }
+        if replaySampled != presentation.sampled { replaySampled = presentation.sampled }
+        if replaySourceLabel != presentation.sourceLabel { replaySourceLabel = presentation.sourceLabel }
+        if replayLoading != presentation.loading { replayLoading = presentation.loading }
+        if replayFinished != presentation.finished { replayFinished = presentation.finished }
+        let nextMode: AtlasMode = presentation.active ? .replay : .live
+        if mode != nextMode { mode = nextMode }
     }
 
     // ── source switching ─────────────────────────────────────────────────
@@ -585,26 +638,8 @@ final class AtlasRuntime: NSObject, ObservableObject {
     }
 
     private func resetSceneForSource() {
-        nodes.removeAll()
-        devices.removeAll()
-        wires.removeAll()
-        nodeByDest.removeAll()
-        deviceById.removeAll()
-        wireByKey.removeAll()
-        wireByEdge.removeAll()
-        edgeByKey.removeAll()
-        effects.clear()
+        dns.reset()
         timers.removeAll()
-        signals.removeAll()
-        deviceAppearanceLinks.removeAll()
-        signalCounts.removeAll()
-        localWeights.removeAll()
-        deviceRank.removeAll()
-        localTraces.removeAll()
-        ringTraces.removeAll()
-        pathHalo = nil
-        haloKey = nil
-        eventLabels.removeAll()
         labels.labels = []
         selection = nil
         selectionHistory = [nil]
@@ -616,30 +651,8 @@ final class AtlasRuntime: NSObject, ObservableObject {
         currentPulse = PulseBucket()
         pulseReady = true
         publishPulse()
-        replayRequestToken += 1
-        replayArchive = nil
-        replayCursor = 0
-        replayIndex = 0
-        replayEmitBudget = 0
-        replayRecent.removeAll()
-        replayFinished = false
-        replayLoading = false
         replayJumpOpen = false
-        mode = .live
-        replayBuckets = []
-        replayTotal = 0
-        replayScanned = 0
-        replaySkipped = 0
-        replaySampled = false
-        replaySourceLabel = ""
-        replayStart = 0
-        replayEnd = 0
-        replayTime = 0
-        replayLastPublished = -1
-        replayRateAuto = true
-        hitCounts = (impact: 0, birth: 0, death: 0)
-        previewIndex = (impact: 0, birth: 0, death: 0)
-        lastImpact = nil
+        replay.reset()
         studyTelemetry = nil
         lastSourceTime = CACurrentMediaTime()
         windowClock = 0
@@ -653,7 +666,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
         source = nextSource
         network.windowHours = windowHours
         resetSceneForSource()
-        buildScene()
+        dns.buildScene()
         applyWindow(animate: false, initial: true)
         applyVisualState()
         updateLabels(force: true)
@@ -714,6 +727,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
                     self.sourceError = nil
                     self.sourceConnecting = false
                     AtlasDiagnostics.log("source live connected endpoint=\(snapshot.endpoint) devices=\(liveNetwork.devices.count) destinations=\(liveNetwork.destinations.count) population=\(population.storageValue) restoring=\(restoring)")
+                    self.stopHostDemo()
                     self.switchSource(to: liveNetwork, source: liveSource)
                     self.showToast(restoring ? "Pi-hole session restored" : "Live Pi-hole connected")
                 }
@@ -748,6 +762,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
         let demo = DemoNetwork(seed: seed)
         let demoSource = LiveSource(network: demo, seed: seed + 7, rate: 2.85)
         switchSource(to: demo, source: demoSource)
+        startHostDemo()
         showToast("Demo source active")
     }
 
@@ -811,83 +826,11 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     // ── construction ─────────────────────────────────────────────────────
 
-    private func buildScene() {
-        for (index, destination) in network.destinations.enumerated() {
-            let spec = NodeSpec(
-                id: destination.id,
-                key: destination.key,
-                domain: destination.domain,
-                meta: destination.status.rawValue,
-                latency: Format.count(destination.liveQueries),
-                status: destination.status,
-                position: destination.position,
-                tone: destination.tone
-            )
-            let node = NodeView(spec: spec, radius: destination.visualRadius, index: index, rng: rng)
-            node.destinationRef = destination
-            node.setPresence(0)
-            nodes.append(node)
-            nodeByDest[destination.id] = node
-        }
-        for device in network.devices {
-            let position = device.surface + device.normal * 0.015
-            let view = DeviceView(spec: DeviceSpecView(id: device.id, name: device.name,
-                                                       kind: device.kind, ip: device.ip,
-                                                       thisMac: device.thisMac),
-                                  position: position, normal: device.normal, rng: rng)
-            view.deviceRef = device
-            devices.append(view)
-            deviceById[device.id] = view
-        }
-        for (index, edge) in network.edges.enumerated() {
-            guard let device = deviceById[edge.deviceId], let node = nodeByDest[edge.destinationId] else { continue }
-            let wire = WireView(offset: 0.11 + Float(index) * 0.173,
-                                tone: edge.destination.status)
-            wire.deviceView = device
-            wire.nodeView = node
-            wire.edgeId = edge.id
-            wire.setGlobePath(from: device.position, to: node.basePosition,
-                              normal: device.normal, globeRadius: globeRadius)
-            wires.append(wire)
-            wireByKey["\(edge.deviceId)::\(edge.destinationId)"] = wire
-            wireByEdge[edge.id] = wire
-            edgeByKey[edge.id] = edge
-        }
-        rebuildLocalWeights()
-        for view in devices {
-            view.update(dt: 0, elapsed: 0, camera: camera)
-        }
-        for node in nodes {
-            node.update(dt: 0, elapsed: 0)
-        }
-        stageScale = globeRadius / 6
-    }
-
-    /// Seed the sparse pull index from the graph's cumulative activity (a live
-    /// snapshot can arrive with local traffic already recorded). Keys are the
-    /// same sorted "a::b" form the source writes, so both directions share one
-    /// weight exactly as before.
-    private func rebuildLocalWeights() {
-        localWeights.removeAll(keepingCapacity: true)
-        deviceRank = Dictionary(uniqueKeysWithValues: network.devices.enumerated().map {
-            ($0.element.id, $0.offset)
-        })
-        for (key, count) in network.localActivity {
-            let parts = key.components(separatedBy: "::")
-            guard parts.count == 2 else { continue }
-            let weight = Float(count)
-            localWeights[parts[0], default: [:]][parts[1], default: 0] += weight
-            localWeights[parts[1], default: [:]][parts[0], default: 0] += weight
-        }
-    }
-
-    private var stageScale: Float = 1
-
     private func configureBoot() {
         let visible = network.destinations.filter(\.windowVisible)
         if reducedMotion {
             for destination in visible {
-                nodeByDest[destination.id]?.setPresence(1)
+                dns.nodeByDest[destination.id]?.setPresence(1)
                 setWireVisibility(destinationId: destination.id, visible: true)
             }
         } else {
@@ -899,7 +842,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
             }
         }
         let fit = currentFitDistance()
-        lastFramingTarget = targetGlobeRadius()
+        lastFramingTarget = dns.targetGlobeRadius()
         updateCameraLimits()
         let dir = Vec3(13.2, 9.1, 26.4).normalized
         flyTo(position: orbitTarget + dir * fit, target: orbitTarget, duration: 2.6, delay: 0.15)
@@ -949,7 +892,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     // ── host globe / deck ────────────────────────────────────────────────
 
-    private var deckPresentation: GlobeDeckPresentation {
+    var deckPresentation: GlobeDeckPresentation {
         GlobeDeckPresentation(activeGlobe: activeGlobe, deckActive: deckActive,
                               deckTo: deckTo, progress: deckProgress)
     }
@@ -959,11 +902,9 @@ final class AtlasRuntime: NSObject, ObservableObject {
     private func configureHostInstrument() {
         host.onSnapshot = { [weak self] snapshot in
             guard let self else { return }
-            self.hostSnapshot = snapshot
-            self.hostAvailable = snapshot.available
-            self.hostNote = snapshot.note
-            self.hostScene.apply(snapshot)
-            self.inspectorRevision += 1
+            self.latestLiveHostSnapshot = snapshot
+            guard !self.hostDemoActive else { return }
+            self.applyHostSnapshot(snapshot)
             #if DEBUG
             if UserDefaults.standard.bool(forKey: "atlas.hostDebug") {
                 let lines = snapshot.apps.prefix(8).map {
@@ -980,14 +921,56 @@ final class AtlasRuntime: NSObject, ObservableObject {
         }
     }
 
-    var hostScopes: Set<HostScope> { host.scopes }
-
     func setHostScope(_ scope: HostScope, enabled: Bool) {
-        host.setScope(scope, enabled: enabled)
+        var next = hostScopes
+        if enabled { next.insert(scope) } else { next.remove(scope) }
+        if next.isEmpty { next.insert(.internet) }
+        guard next != hostScopes else { return }
+        hostScopes = next
+        host.setScopes(next)
     }
 
     func setHostScopes(_ scopes: Set<HostScope>) {
-        host.setScopes(scopes)
+        let next = scopes.isEmpty ? [.internet] : scopes
+        guard next != hostScopes else { return }
+        hostScopes = next
+        host.setScopes(next)
+    }
+
+    private func applyHostSnapshot(_ snapshot: HostSnapshot) {
+        hostSnapshot = snapshot
+        hostAvailable = snapshot.available
+        hostNote = snapshot.note
+        hostScene.apply(snapshot)
+        inspectorRevision += 1
+    }
+
+    /// Demo mode fills the HOST globe with the same deterministic fixture
+    /// used by headless review. The live monitor keeps sampling in the
+    /// background; its snapshots are held until demo mode ends.
+    private func startHostDemo() {
+        hostDemoActive = true
+        hostAvailable = true
+        hostDomainStatus = nil
+        hostNote = "Deterministic sample traffic"
+        applyHostSnapshot(HostDemo.snapshot(includeLocal: false))
+        hostDemoTimer?.invalidate()
+        hostDemoTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self, self.hostDemoActive, !self.hostPaused else { return }
+            self.applyHostSnapshot(HostDemo.snapshot(includeLocal: false))
+        }
+    }
+
+    private func stopHostDemo() {
+        guard hostDemoActive else { return }
+        hostDemoActive = false
+        hostDemoTimer?.invalidate()
+        hostDemoTimer = nil
+        if let snapshot = latestLiveHostSnapshot {
+            applyHostSnapshot(snapshot)
+        } else {
+            applyHostSnapshot(.empty)
+        }
     }
 
     func setHostPaused(_ paused: Bool) {
@@ -1072,7 +1055,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
         let offset = rearOffset()
         let center = camera.project(offset, viewport: viewport)
         let depth = camera.position.distance(to: offset)
-        let radius = CGFloat(globeRadius * Float(viewSize.height)
+        let radius = CGFloat(dns.globeRadius * Float(viewSize.height)
             / (2 * tan(camera.fov * .pi / 360)) / max(0.001, depth))
         return (kind, CGPoint(x: CGFloat(center.x), y: CGFloat(center.y)), radius)
     }
@@ -1080,7 +1063,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
     private func hitsInactiveGlobe(point: CGPoint, viewSize: CGSize) -> Bool {
         let viewport = SIMD2<Float>(Float(viewSize.width), Float(viewSize.height))
         let activeCenter = camera.project(.zero, viewport: viewport)
-        let activeRadius = globeRadius * Float(viewSize.height)
+        let activeRadius = dns.globeRadius * Float(viewSize.height)
             / (2 * tan(camera.fov * .pi / 360)) / max(0.001, camera.position.length)
         let dActive = hypot(activeCenter.x - Float(point.x), activeCenter.y - Float(point.y))
         if dActive < activeRadius * 0.96 { return false }
@@ -1088,7 +1071,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
         let offset = rearOffset()
         let center = camera.project(offset, viewport: viewport)
         let depth = camera.position.distance(to: offset)
-        let radius = globeRadius * Float(viewSize.height)
+        let radius = dns.globeRadius * Float(viewSize.height)
             / (2 * tan(camera.fov * .pi / 360)) / max(0.001, depth)
         let d = hypot(center.x - Float(point.x), center.y - Float(point.y))
         return d < radius * 0.94
@@ -1113,8 +1096,8 @@ final class AtlasRuntime: NSObject, ObservableObject {
         let background = rearOffset()
         deckWorldBackground = background
         deckTargetFrom = orbitTarget
-        // Orbit the camera 180° around the clicked globe's far side. The old
-        // foreground never moves, so it becomes the background instead of
+        // Orbit the camera 180° around the clicked globe's far side. The
+        // active globe never moves, so it becomes the background instead of
         // disappearing behind the camera.
         deckOrbitCenter = background
         deckOrbitStart = camera.position - background
@@ -1127,6 +1110,15 @@ final class AtlasRuntime: NSObject, ObservableObject {
         lastInteraction = CACurrentMediaTime()
         labels.labels = []
         hostLabels.labels = []
+    }
+
+    private func retargetSettingsTab(for kind: GlobeKind) {
+        guard settingsOpen else { return }
+        if kind == .host {
+            if settingsTab == .source || settingsTab == .motion { settingsTab = .host }
+        } else if settingsTab == .host {
+            settingsTab = .source
+        }
     }
 
     func toggleGlobe() {
@@ -1142,8 +1134,8 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     private func rearOffset() -> Vec3 {
         // A real world-space orbit around the active globe. No depth clamp:
-        // clamping produced the old back-and-forth motion instead of a full
-        // orbit that passes behind the camera.
+        // a clamped offset would pull the background forward instead of
+        // letting the orbit pass behind the camera.
         rearWorldOffset
     }
 
@@ -1166,6 +1158,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
             displayedGlobe = deckTo
             labels.labels = []
             hostLabels.labels = []
+            retargetSettingsTab(for: deckTo)
         }
         if deckProgress >= 1 {
             completeDeck()
@@ -1193,6 +1186,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
         rearWorldOffset = -background
         activeGlobe = deckTo
         displayedGlobe = deckTo
+        retargetSettingsTab(for: deckTo)
         AtlasPreferences.activeGlobe = deckTo
         deckActive = false
         labels.labels = []
@@ -1206,17 +1200,38 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     /// Headless review hook: populate the host globe with the deterministic demo
     /// snapshot and make it active without a live monitor.
-    func debugShowHostGlobe() {
-        let snapshot = HostDemo.snapshot()
+    func debugHostArrival(_ domainID: String) {
+        _ = hostScene.debugTriggerArrival(domainID: domainID)
+    }
+
+    func debugHostRetire(_ domainID: String) {
+        _ = hostScene.debugRetireDomain(domainID)
+    }
+
+    func debugHostStyle(_ id: String?) {
+        hostScene.debugSetMotionStyle(id)
+    }
+
+    func debugHostAppImpact(_ appID: String) {
+        _ = hostScene.debugTriggerAppImpact(appID: appID)
+    }
+
+    func debugHostRetireApp(_ appID: String) {
+        _ = hostScene.debugRetireApp(appID)
+    }
+
+    func debugShowHostGlobe(includeLocal: Bool = false, prime: Bool = true) {
+        let snapshot = HostDemo.snapshot(includeLocal: includeLocal)
         hostSnapshot = snapshot
         hostScene.apply(snapshot)
-        hostScene.primeForSnapshot()
+        if prime { hostScene.primeForSnapshot() }
         activeGlobe = .host
         displayedGlobe = .host
         deckActive = false
         selection = nil
         hostSelection = nil
         labels.labels = []
+        retargetSettingsTab(for: .host)
         refreshUI()
     }
 
@@ -1236,7 +1251,10 @@ final class AtlasRuntime: NSObject, ObservableObject {
         let deck = deckPresentation
         hostScene.setCamera(camera)
         hostScene.setDetail(deck.hostDetail, active: deck.hostIsLive)
-        hostScene.update(dt: dt, camera: camera)
+        // Pause freezes the host field, not the camera. Passing zero keeps
+        // birth/retirement studies and comets on their last frame until the
+        // monitor resumes.
+        hostScene.update(dt: hostPaused ? 0 : dt, camera: camera)
         if activeGlobe == .host && !deckActive && viewSize.width > 10 {
             hostScene.resolveLabels(camera: camera, viewSize: viewSize, labelMode: labelMode)
             if hostLabels.labels != hostScene.labels {
@@ -1271,18 +1289,6 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     var isReplay: Bool { mode == .replay }
 
-    /// Pick a default compression so the whole range plays in roughly three
-    /// minutes. 1× stays available, but a multi-day range would otherwise take
-    /// days to watch before the first useful movement.
-    private static func autoReplayRate(durationMS: Double) -> Float {
-        let seconds = max(1, durationMS / 1000)
-        let target: Double = 180
-        let stops: [Float] = [1, 60, 600, 3_600]
-        return stops.min {
-            abs(log(seconds / Double($0) / target)) < abs(log(seconds / Double($1) / target))
-        } ?? 600
-    }
-
     var replayProgress: Double {
         guard isReplay, replayEnd > replayStart else { return 0 }
         return min(1, max(0, (replayTime - replayStart) / (replayEnd - replayStart)))
@@ -1302,256 +1308,45 @@ final class AtlasRuntime: NSObject, ObservableObject {
         return Format.clock(replayTime)
     }
 
-    /// Load the last `hours` of traffic and start playing at `at` (or at the
-    /// beginning). The demo archive is built locally; a Pi-hole archive is
-    /// fetched from FTL's on-disk query database off the main thread.
+    // The engine lives in `ReplayController`. These entry points stay on the
+    // runtime so the UI and tools keep their existing call sites.
     func enterReplay(hours: Float = ReplayRange.defaultChoice.hours, at anchorMS: Double? = nil) {
-        guard ready else { return }
-        let range = ReplayRange.nearest(hours: hours)
-        let previousFraction: Double = {
-            guard isReplay, replayEnd > replayStart else { return 0 }
-            return min(1, max(0, (replayCursor - replayStart) / (replayEnd - replayStart)))
-        }()
-        let end = Date().timeIntervalSince1970 * 1000
-        let start = max(0, end - Double(range.hours) * 3_600_000)
-        let anchor = anchorMS.map { min(end - 1, max(start, $0)) }
-            ?? (isReplay ? start + (end - start) * previousFraction : start)
-
-        replayRangeHours = range.hours
-        replayRequestToken += 1
-        let token = replayRequestToken
-        replayJumpOpen = false
-
-        if let live = source as? PiHoleSource {
-            replayLoading = true
-            Task { [weak self] in
-                do {
-                    let archive = try await live.loadReplay(from: start, until: end)
-                    await MainActor.run {
-                        self?.installReplay(archive, at: anchor, token: token, range: range)
-                    }
-                } catch {
-                    await MainActor.run {
-                        self?.failReplay(error, token: token, range: range)
-                    }
-                }
-            }
-        } else if let demo = source as? LiveSource {
-            let archive = demo.makeReplay(from: start, until: end)
-            installReplay(archive, at: anchor, token: token, range: range)
-        } else {
-            showToast("This source cannot be replayed.", tone: .coral)
-        }
+        replay.enterReplay(hours: hours, at: anchorMS)
     }
 
-    private func installReplay(_ archive: ReplayArchive, at anchor: Double,
-                               token: Int, range: ReplayRange) {
-        guard token == replayRequestToken else { return }
-        guard !archive.events.isEmpty else {
-            replayLoading = false
-            showToast("No playable queries in \(range.detail).", tone: .coral)
-            return
-        }
-        if replayRateAuto {
-            replayRate = Self.autoReplayRate(durationMS: archive.duration)
-        }
-        replayArchive = archive
-        replayStart = archive.start
-        replayEnd = archive.end
-        replayBuckets = archive.buckets
-        replayMaxBucket = archive.maxBucket
-        replayTotal = archive.events.count
-        replayScanned = archive.scannedRows
-        replaySkipped = archive.skippedRows
-        replaySampled = archive.sampled
-        replaySourceLabel = archive.sourceLabel
-        replayLoading = false
-        mode = .replay
-        paused = false
-        source.setPaused(true)
-        replayFinished = false
-        replayLastPublished = -1
-        replayRecent.removeAll()
-        clearReplayEffects()
-        seekReplay(to: anchor, preRoll: true)
-        let sampled = archive.sampled ? " · sampled" : ""
-        showToast("Replay · \(range.title) · \(Format.count(archive.events.count)) queries\(sampled)",
-                  tone: .signal)
-        refreshUI()
-    }
-
-    private func failReplay(_ error: Error, token: Int, range: ReplayRange) {
-        guard token == replayRequestToken else { return }
-        replayLoading = false
-        if replayArchive != nil, replayEnd > replayStart {
-            replayRangeHours = Float((replayEnd - replayStart) / 3_600_000)
-        }
-        showToast("History unavailable · \(error.localizedDescription)", tone: .coral)
-    }
-
-    /// Leave playback and resume the live poller. Safe to call while a history
-    /// request is still in flight; the token discards the late result.
     func goLive() {
-        guard isReplay || replayLoading else { return }
-        replayRequestToken += 1
-        replayLoading = false
-        replayArchive = nil
-        replayBuckets = []
-        replayTotal = 0
-        replayScanned = 0
-        replaySkipped = 0
-        replaySampled = false
-        replaySourceLabel = ""
-        replayRecent.removeAll()
-        replayFinished = false
-        replayJumpOpen = false
-        replayStart = 0
-        replayEnd = 0
-        replayTime = 0
-        replayLastPublished = -1
-        replayRateAuto = true
-        mode = .live
-        paused = false
-        source.setPaused(false)
-        clearReplayEffects()
-        _ = applyWindow(animate: false, initial: false)
-        lastSourceTime = CACurrentMediaTime()
-        refreshUI()
-        showToast("Live traffic", tone: .signal)
+        replay.goLive()
     }
 
     func setReplayRate(_ rate: Float) {
-        replayRateAuto = false
-        replayRate = clamp(rate, 1, 7_200)
-        if replayFinished {
-            seekReplay(to: replayStart, preRoll: false)
-        }
-        if paused { setPaused(false) }
-        refreshUI()
+        replay.setRate(rate)
     }
 
     func setReplayRange(_ range: ReplayRange) {
-        replayRangeHours = range.hours
-        if isReplay || replayLoading {
-            enterReplay(hours: range.hours)
-        }
+        replay.setRange(range)
     }
 
-    /// Jump the playhead. Clearing the stage makes a scrub read as a jump cut
-    /// rather than a pile-up of studies from the old position. A short
-    /// pre-roll seeds the new position with the queries that just landed.
     func seekReplay(to timeMS: Double, preRoll: Bool = true) {
-        guard let archive = replayArchive, !archive.events.isEmpty else { return }
-        let target = min(replayEnd, max(replayStart, timeMS))
-        clearReplayEffects()
-        replayCursor = target
-        replayTime = target
-        replayLastPublished = target
-        replayIndex = archive.index(at: target)
-        replayEmitBudget = 0
-        replayRecent.removeAll()
-        replayFinished = target >= replayEnd - 1
-        if preRoll && !paused {
-            let from = archive.index(at: max(replayStart, target - 1_500))
-            var index = from
-            var count = 0
-            while index < replayIndex, count < 8 {
-                playReplayEvent(archive.events[index])
-                index += 1
-                count += 1
-            }
-        }
-        refreshUI()
+        replay.seekReplay(to: timeMS, preRoll: preRoll)
     }
 
     func seekReplay(fraction: Double, preRoll: Bool = false) {
-        guard isReplay else { return }
-        let value = min(1, max(0, fraction))
-        seekReplay(to: replayStart + (replayEnd - replayStart) * value, preRoll: preRoll)
+        replay.seekReplay(fraction: fraction, preRoll: preRoll)
     }
 
-    private func advanceReplay(dt: Float) {
-        guard isReplay, !paused, !replayLoading,
-              let archive = replayArchive, !archive.events.isEmpty else { return }
-        guard replayCursor < replayEnd else {
-            if replayLoop {
-                seekReplay(to: replayStart, preRoll: false)
-            } else if !replayFinished {
-                replayFinished = true
-            }
-            return
-        }
-        if replayFinished { replayFinished = false }
-        replayEmitBudget = min(1.5, replayEmitBudget + Double(dt) * 30)
-        let target = min(replayEnd, replayCursor + Double(dt) * Double(replayRate) * 1000)
-        var allowed = min(8, Int(replayEmitBudget))
-        while replayIndex < archive.events.count,
-              archive.events[replayIndex].ts <= target,
-              allowed > 0 {
-            playReplayEvent(archive.events[replayIndex])
-            replayIndex += 1
-            allowed -= 1
-            replayEmitBudget -= 1
-        }
-        // The renderer has a fixed signal/effect budget. When history is denser
-        // than that, keep the playhead honest and drop the surplus events for
-        // this slice instead of building an unbounded backlog.
-        while replayIndex < archive.events.count,
-              archive.events[replayIndex].ts <= target {
-            replayIndex += 1
-        }
-        replayCursor = target
-        if replayCursor >= replayEnd {
-            if replayLoop {
-                seekReplay(to: replayStart, preRoll: false)
-            } else {
-                replayFinished = true
-                refreshUI()
-            }
-        }
-    }
-
-    private func playReplayEvent(_ event: ReplayEvent) {
-        guard let device = network.deviceById[event.deviceId],
-              let destination = network.destinationById[event.destinationId],
-              let edge = edgeByKey["\(event.deviceId)::\(event.destinationId)"] else { return }
-        let query = QueryEvent(
-            id: event.id,
-            ts: event.ts,
-            device: device,
-            destination: destination,
-            edge: edge,
-            latency: event.latency
-        )
-        handleQuery(query)
-        replayRecent.insert(query, at: 0)
-        if replayRecent.count > 40 { replayRecent.removeLast(replayRecent.count - 40) }
-    }
 
     private func clearReplayEffects() {
-        effects.clear()
-        signals.removeAll()
-        deviceAppearanceLinks.removeAll()
-        signalCounts.removeAll()
-        localTraces.removeAll()
-        ringTraces.removeAll()
-        eventLabels.removeAll()
-        lastImpact = nil
-        hitGeometryReplayAt = nil
-        for wire in wires {
-            wire.setSignalActive(false)
-            wire.reveal = 1
-        }
-        for node in nodes { node.stopRecoil() }
-        for device in network.devices { device.pendingAppearance = false }
-        updateLabels(force: true)
-        applyVisualState()
+        dns.clearReplayEffects()
     }
 
     // ── timers ───────────────────────────────────────────────────────────
 
     func after(_ seconds: Float, _ action: @escaping () -> Void) {
         timers.append(TimerEntry(remaining: seconds, action: action, token: timerToken))
+    }
+
+    func clearTimers() {
+        timers.removeAll()
     }
 
     private func updateTimers(_ dt: Float) {
@@ -1591,7 +1386,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
         }
 
         camera.aspect = Float(frameViewSize.width / max(1, frameViewSize.height))
-        trauma = max(0, trauma - dt * 1.8)
+        dns.trauma = max(0, dns.trauma - dt * 1.8)
         advanceDeck(dt: paused ? 0 : dt)
         updateCamera(dt)
         // The inactive DNS instrument is frozen: its layout, effects and
@@ -1599,19 +1394,19 @@ final class AtlasRuntime: NSObject, ObservableObject {
         // exactly where it left off when it becomes active again.
         let dnsLive = activeGlobe == .dns && !deckActive
         if dnsLive {
-            updateLayout(realDt: dt)
-            updateDevices(dt)
-            updateNodes(dt)
-            updateWires(dt)
-            advanceReplay(dt: dt)
-            updateHalo(dt)
-            updateLocalTraces(dt)
-            for i in signals.indices.reversed() {
-                if !signals[i].update(dt: simDt) {
-                    signals.remove(at: i)
+            dns.updateLayout(realDt: dt)
+            dns.updateDevices(dt)
+            dns.updateNodes(dt)
+            dns.updateWires(dt)
+            replay.advance(dt: dt)
+            dns.updateHalo(dt)
+            dns.updateLocalTraces(dt)
+            for i in dns.signals.indices.reversed() {
+                if !dns.signals[i].update(dt: simDt) {
+                    dns.signals.remove(at: i)
                 }
             }
-            updateDeviceAppearances(simDt)
+            dns.updateDeviceAppearances(simDt)
         }
 
         statsClock += dt
@@ -1643,7 +1438,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
                 labelResolveClock = 0
                 updateLabels(force: false)
             }
-            expireEventLabels()
+            dns.expireEventLabels()
         } else if !labels.labels.isEmpty {
             labels.labels = []
         }
@@ -1658,7 +1453,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
         let target = max(close, wide) * dragScale
         dofStrength += (target - dofStrength) * (1 - exp(-dt * 5))
 
-        buildDrawList(simDt: simDt)
+        dns.buildDrawList(simDt: simDt)
         lastRenderTime = now
     }
 
@@ -1745,251 +1540,6 @@ final class AtlasRuntime: NSObject, ObservableObject {
         sphericalDelta *= (1 - damping)
     }
 
-    private func updateDevices(_ dt: Float) {
-        for view in devices {
-            view.update(dt: dt, elapsed: elapsed, camera: camera)
-        }
-    }
-
-    private func updateNodes(_ dt: Float) {
-        let focusDistance = camera.position.length - globeRadius * 0.7
-        let labelScale = 1.6 * (0.35 + 0.65 * dofStrength)
-        for node in nodes {
-            let depth = camera.position.distance(to: node.basePosition)
-            let far = clamp((depth - focusDistance) / max(0.001, globeRadius * 1.35), 0, 1)
-            node.depthBlur = (node.selected || node.hovered) ? 0 : far * labelScale
-            node.update(dt: dt, elapsed: elapsed)
-        }
-    }
-
-    private func updateWires(_ dt: Float) {
-        let cameraDir = camera.position.normalized
-        for wire in wires {
-            let facing = clamp(wire.deviceView.normal.dot(cameraDir) * 1.4 + 0.15, 0.06, 1)
-            wire.setFacing(facing)
-        }
-        wireClock += dt
-        if wireClock >= 0.06 {
-            wireClock = 0
-            updateWireGeometry()
-        }
-    }
-
-    private func updateWireGeometry() {
-        for wire in wires {
-            wire.setGlobePath(from: wire.deviceView.position,
-                              to: wire.nodeView.basePosition,
-                              normal: wire.deviceView.normal,
-                              globeRadius: globeRadius)
-        }
-    }
-
-    // ── layout (AtlasGlobe._updateLayout) ────────────────────────────────
-
-    private enum OrbSpacing {
-        /// Nominal centre-to-centre clearances. These are only achievable while
-        /// the population is small; inside the capped globe they shrink.
-        static let device: Float = 1.25
-        static let destinationBase: Float = 1.0
-        static let shellInner: Float = 0.24
-        static let shellOuter: Float = 0.9
-        static let volumePacking: Float = 0.72
-        static let surfacePacking: Float = 0.8
-        static let minimumRadius: Float = 6
-        /// The previous live cap was 7. A 35% increase is the largest globe we
-        /// draw; after this point orbs overlap instead of growing the field.
-        static let maximumRadius: Float = 7 * 1.35
-    }
-
-    private func visibleDevicesCount() -> Int {
-        network.devices.reduce(0) { $0 + ($1.windowVisible ? 1 : 0) }
-    }
-
-    private func visibleDestinationsCount() -> Int {
-        network.destinations.reduce(0) { $0 + ($1.windowVisible ? 1 : 0) }
-    }
-
-    /// The globe grows gently from 6 to the 35%-larger maximum as the visible
-    /// population rises, then stops. It no longer expands to honour a fixed
-    /// clearance; the layout spacing shrinks inside the capped globe instead.
-    private func targetGlobeRadius() -> Float {
-        let count = visibleDevicesCount() + visibleDestinationsCount()
-        let t = smoothstep(8, 320, Float(count))
-        return OrbSpacing.minimumRadius
-            + (OrbSpacing.maximumRadius - OrbSpacing.minimumRadius) * t
-    }
-
-    /// Centre-to-centre spacing that the current globe can actually support.
-    /// At low counts this is the authored clearance; as the population grows
-    /// the value falls so the capped globe does not jitter against an
-    /// impossible constraint.
-    private func effectiveDeviceSpacing(radius: Float, count: Int) -> Float {
-        guard count > 0 else { return OrbSpacing.device }
-        let supported = 4 * radius * (OrbSpacing.surfacePacking / Float(count)).squareRoot()
-        return max(0.02, min(OrbSpacing.device, supported))
-    }
-
-    private func effectiveDestinationSpacing(radius: Float, count: Int,
-                                             averageVisualRadius: Float) -> Float {
-        let nominal = OrbSpacing.destinationBase + averageVisualRadius * 2
-        guard count > 0 else { return nominal }
-        let shellFraction = OrbSpacing.shellOuter * OrbSpacing.shellOuter * OrbSpacing.shellOuter
-            - OrbSpacing.shellInner * OrbSpacing.shellInner * OrbSpacing.shellInner
-        let available = shellFraction * (4.0 / 3.0) * Float.pi * radius * radius * radius
-            * OrbSpacing.volumePacking
-        let perOrb = available / Float(count)
-        let supported = 2 * Float(cbrt(Double(3 * perOrb / (4 * Float.pi))))
-        return max(0.02, min(nominal, supported))
-    }
-
-    private func updateLayout(realDt: Float) {
-        let dt = min(0.1, max(0, realDt))
-        let target = targetGlobeRadius()
-        if abs(target - lastFramingTarget) > 0.35 {
-            lastFramingTarget = target
-            AtlasDiagnostics.log("globe target=\(String(format: "%.2f", target)) devices=\(visibleDevicesCount()) destinations=\(visibleDestinationsCount())")
-            if !userZoomed, selection == nil, cameraFlight == nil {
-                applyFraming()
-            }
-        }
-        globeRadius += (target - globeRadius) * (1 - exp(-dt * 1.35))
-        stageScale = globeRadius / 6
-        let R = globeRadius
-
-        let devices = network.devices
-        let visibleDevices = devices.filter(\.windowVisible)
-        let destinations = network.destinations
-        let visible = destinations.filter(\.windowVisible)
-
-        let averageDestinationRadius = visible.isEmpty ? 0
-            : visible.reduce(0) { $0 + $1.visualRadius } / Float(visible.count)
-        let deviceSpacing = effectiveDeviceSpacing(radius: R, count: visibleDevices.count)
-        let destinationSpacing = effectiveDestinationSpacing(
-            radius: R, count: visible.count, averageVisualRadius: averageDestinationRadius)
-
-        layoutTick &+= 1
-        let pairBudget = visibleDevices.count * visibleDevices.count
-            + visible.count * visible.count
-        let relaxationInterval = pairBudget > 1_000_000 ? 8 : (pairBudget > 250_000 ? 4 : 1)
-        let relaxPairs = layoutTick % relaxationInterval == 0
-
-        let move = 1 - exp(-dt * 0.22)
-        for device in visibleDevices {
-            var targetDir = device.homeNormal * 2.0
-            // Only pairs that have exchanged local traffic pull on each other;
-            // the weight is symmetric because handleLocal indexes both
-            // directions. This is the same sum the previous all-pairs scan
-            // computed, without building a key per pair per frame.
-            if let peers = localWeights[device.id] {
-                let ordered = peers.sorted {
-                    (deviceRank[$0.key] ?? Int.max) < (deviceRank[$1.key] ?? Int.max)
-                }
-                for (peerId, count) in ordered where peerId != device.id {
-                    guard let peer = deviceById[peerId]?.deviceRef,
-                          peer.windowVisible else { continue }
-                    let strength = min(5, sqrt(count)) * 0.42
-                    targetDir += peer.normal * strength
-                }
-            }
-            if targetDir.lengthSq > 0.0001 {
-                device.normal = (device.normal + (targetDir.normalized - device.normal) * move).normalized
-            }
-        }
-        if relaxPairs {
-            for _ in 0..<2 {
-                for i in 0..<visibleDevices.count {
-                    for j in (i + 1)..<visibleDevices.count {
-                        let a = visibleDevices[i], b = visibleDevices[j]
-                        let distance = a.normal.distance(to: b.normal) * R
-                        if distance >= deviceSpacing { continue }
-                        var delta = a.normal - b.normal
-                        if delta.lengthSq < 1e-6 { delta = Vec3(1, 0, 0) }
-                        delta = delta.normalized * (((deviceSpacing - distance) / R) * 0.5)
-                        a.normal = (a.normal + delta).normalized
-                        b.normal = (b.normal - delta).normalized
-                    }
-                }
-            }
-        }
-
-        let destMove = 1 - exp(-dt * 0.2)
-        let radialMove = 1 - exp(-dt * 0.3)
-        for destination in visible {
-            var pull = Vec3.zero
-            var total: Float = 0
-            var maxWeight: Float = 0
-            for edge in destination.edges where edge.device.windowVisible {
-                let weight = 0.2 + Float(edge.baseQueries) * 0.003 + edge.activity * 2.2
-                pull += edge.device.normal * weight
-                total += weight
-                maxWeight = max(maxWeight, weight)
-            }
-            if total > 0.0001 {
-                var targetDirection = pull.normalized
-                targetDirection = (targetDirection + (destination.homeDirection - targetDirection) * 0.3).normalized
-                destination.direction = (destination.direction
-                    + (targetDirection - destination.direction) * destMove).normalized
-                let dominance = max(0.2, maxWeight / total)
-                let clearance = destination.visualRadius + 0.55
-                let maxFraction = max(0.36, min(OrbSpacing.shellOuter, 1 - clearance / R))
-                let targetFraction = max(0.34, min(maxFraction, 0.42 + dominance * 0.4))
-                destination.radialFraction += (targetFraction - destination.radialFraction) * radialMove
-            }
-            destination.radialFraction = max(OrbSpacing.shellInner, min(OrbSpacing.shellOuter, destination.radialFraction))
-        }
-
-        if relaxPairs {
-            for _ in 0..<3 {
-                for i in 0..<visible.count {
-                    let a = visible[i]
-                    for j in (i + 1)..<visible.count {
-                        let b = visible[j]
-                        var pa = a.direction * (a.radialFraction * R)
-                        var pb = b.direction * (b.radialFraction * R)
-                        let minDist = min(a.visualRadius + b.visualRadius + OrbSpacing.destinationBase,
-                                          destinationSpacing)
-                        var delta = pa - pb
-                        let distance = max(0.0001, delta.length)
-                        if distance >= minDist { continue }
-                        delta = delta.normalized * ((minDist - distance) * 0.5)
-                        pa += delta
-                        pb -= delta
-                        let maxA = max(0.34, min(OrbSpacing.shellOuter, 1 - (a.visualRadius + 0.55) / R))
-                        let maxB = max(0.34, min(OrbSpacing.shellOuter, 1 - (b.visualRadius + 0.55) / R))
-                        a.radialFraction = max(0.34, min(maxA, pa.length / R))
-                        b.radialFraction = max(0.34, min(maxB, pb.length / R))
-                        a.direction = pa.normalized
-                        b.direction = pb.normalized
-                    }
-                }
-            }
-        }
-
-        for device in devices {
-            device.surface = device.normal * R
-            deviceById[device.id]?.setSurfacePosition(device.surface, device.normal)
-        }
-        for destination in destinations {
-            let maxFraction = max(0.34, min(OrbSpacing.shellOuter, 1 - (destination.visualRadius + 0.55) / R))
-            destination.radialFraction = min(destination.radialFraction, maxFraction)
-            destination.radius = destination.radialFraction * R
-            destination.position = destination.direction * destination.radius
-            nodeByDest[destination.id]?.setBasePosition(destination.position)
-        }
-
-        updateCameraLimits()
-
-        haloClock += realDt
-        if haloClock >= 0.55 {
-            haloClock = 0
-            if selection?.destinationId != nil || hoveredPath != nil {
-                pathHalo = nil
-                haloKey = nil
-                syncPathHalo()
-            }
-        }
-    }
-
     // ── draw list ────────────────────────────────────────────────────────
 
     /// Deterministic headless stepping for snapshot / verification tools. The
@@ -2012,168 +1562,17 @@ final class AtlasRuntime: NSObject, ObservableObject {
         }
     }
 
-    private func buildDrawList(simDt: Float) {
-        dot.reset()
-        if !dnsHasVisualData {
-            // An empty globe never joins the crossfade, so it stays at the
-            // background floor even while a deck is in flight.
-            let detail: Float = activeGlobe == .dns && !deckActive
-                ? 1 : GlobeDeckPresentation.backgroundDetail
-            let startLine = dot.stageLines.count
-            let startPoint = dot.stagePoints.count
-            stage.update(dt: simDt, elapsed: elapsed, stageScale: stageScale,
-                         detail: max(0.51, detail), into: dot)
-            let alpha = 0.03 + 0.97 * smoothstep(0.28, 0.82, detail)
-            for i in startLine..<dot.stageLines.count { dot.stageLines[i].color.w *= alpha }
-            for i in startPoint..<dot.stagePoints.count { dot.stagePoints[i].color.w *= alpha }
-            labels.labels = []
-            return
-        }
-        let dnsDetail = deckPresentation.dnsGeometryDetail
-        // Keep the stage geometry stable and fade it, so the shell does not
-        // pop in at a detail threshold while the globe is coming into focus.
-        let stageLineStart = dot.stageLines.count
-        let stagePointStart = dot.stagePoints.count
-        stage.update(dt: simDt, elapsed: elapsed, stageScale: stageScale,
-                     detail: max(0.51, dnsDetail), into: dot)
-        let stageAlpha = 0.03 + 0.97 * smoothstep(0.28, 0.82, dnsDetail)
-        for i in stageLineStart..<dot.stageLines.count { dot.stageLines[i].color.w *= stageAlpha }
-        for i in stagePointStart..<dot.stagePoints.count { dot.stagePoints[i].color.w *= stageAlpha }
-
-        for node in nodes {
-            node.appendDraw(dot, elapsed: elapsed, camera: camera, detail: dnsDetail)
-        }
-        let focusDepth = camera.viewDepth(of: .zero)
-        for (index, device) in devices.enumerated() {
-            let delta = camera.viewDepth(of: device.position) - focusDepth
-            device.defocus = delta > 0 ? clamp01(delta * 0.16) : 0
-            device.stagger = Float(index % 7) / 7 * 0.10
-            device.appendDraw(dot, elapsed: elapsed, detail: dnsDetail)
-        }
-        for wire in wires where !wire.hidden {
-            wire.appendDraw(dot, elapsed: elapsed, detail: dnsDetail)
-        }
-        let dnsLive = activeGlobe == .dns && !deckActive
-        if dnsLive {
-            for signal in signals {
-                signal.appendDraw(dot, elapsed: elapsed)
-            }
-
-            var ctx = EffectContext(camera: camera, node: nil, radius: 0.3, point: .zero,
-                                    normal: .up, elapsed: elapsed, onShake: { [weak self] amount in
-                                        self?.trauma = min(1, (self?.trauma ?? 0) + amount * 0.55)
-                                    }, rng: rng)
-            effects.update(dt: simDt, ctx: ctx, draw: dot)
-            appendHitGeometry(dot)
-            _ = ctx
-        }
-
-        for trace in localTraces {
-            let t = min(1, trace.age / trace.duration)
-            let alpha = 1 - t
-            for vertex in trace.baseTriangles {
-                var v = vertex
-                v.color.w *= alpha
-                dot.rawTriangles.append(v)
-            }
-        }
-        for trace in ringTraces {
-            let t = min(1, trace.age / trace.duration)
-            let scale = 0.9 + t * 1.3
-            let orientation = simd_quatf(from: Vec3(0, 0, 1), to: trace.normal)
-            let model = Mat4.compose(position: trace.center, quaternion: orientation,
-                                     scale: Vec3(repeating: scale))
-            dot.addMesh(.ringFull, MeshInstance(model: model,
-                                                color: rgba(Palette.signalIce, trace.baseAlpha * (1 - t))))
-        }
-        if let halo = pathHalo {
-            dot.rawTriangles.append(contentsOf: halo.wide)
-            dot.rawTriangles.append(contentsOf: halo.tight)
-            let t = (elapsed * 0.16).truncatingRemainder(dividingBy: 1)
-            let p = halo.curve.pointAt(t)
-            dot.sprites.append(.glow(p, size: 0.75,
-                                     color: halo.blocked ? Palette.coral : Palette.gold,
-                                     opacity: 0.55 + sin(elapsed * 3.2) * 0.18))
-        }
-    }
-
-    /// Port of the lab's optional Hit geometry overlay: the blast plane, its
-    /// normal and the impact centre. It is drawn from the same record the
-    /// effects use, so the plane can never disagree with the blast. Shield
-    /// hits are 360° and deliberately have no planar overlay.
-    private func appendBackgroundShell(to draw: DrawList, color: SRGB, alpha: Float) {
-        // A fuzzy ring of soft glows, not a line: the shell should read as a
-        // bokeh silhouette rather than sharp geometry behind the active globe.
-        let count = 56
-        for i in 0..<count {
-            let y = 1 - (Float(i) + 0.5) * 2 / Float(count)
-            let r = sqrt(max(0, 1 - y * y))
-            let a = Float(i) * 2.399963
-            let p = Vec3(cos(a) * r * 6.08, y * 6.08, sin(a) * r * 6.08)
-            draw.sprites.append(.glow(p, size: 3.2, color: color, opacity: 0.04 * alpha))
-        }
-    }
-
-    private func appendHitGeometry(_ draw: DrawList) {
-        guard showHitGeometry,
-              let record = lastImpact,
-              !record.blocked,
-              record.impactId != "containment",
-              let node = nodeByDest[record.destinationId],
-              !node.destroyed else { return }
-        let age = elapsed - (hitGeometryReplayAt ?? record.at)
-        guard age >= 0, age < 1.9 else { return }
-
-        let baseR = max(0.26, node.radius * 1.55)
-        let size = baseR * 3.2
-        let centre = node.basePosition + node.recoilOffset
-        let basis = orthoBasis(record.normal)
-        let fade = 1 - max(0, (age - 1.05) / (1.9 - 1.05))
-        let pulse = 1 + sin(age * 5.5) * 0.012
-
-        let cross = rgba(Palette.signal, 0.045 * fade)
-        draw.addLine(centre - basis.t * (size * pulse), centre + basis.t * (size * pulse), cross)
-        draw.addLine(centre - basis.b * (size * pulse), centre + basis.b * (size * pulse), cross)
-
-        draw.addPolyline(ringPoints(center: centre, axisX: basis.t, axisY: basis.b,
-                                    radius: size * 0.55 * pulse, segments: 96),
-                         color: rgba(Palette.signal, 0.06 * fade))
-        draw.addPolyline(ringPoints(center: centre, axisX: basis.t, axisY: basis.b,
-                                    radius: size * pulse, segments: 128),
-                         color: rgba(Palette.signal, 0.17 * fade))
-        draw.addPolyline(ringPoints(center: centre, axisX: basis.t, axisY: basis.b,
-                                    radius: node.radius * 1.02, segments: 96),
-                         color: rgba(Palette.gold, 0.28 * fade))
-
-        draw.addLine(centre - record.normal * (size * 0.18),
-                     centre + record.normal * (size * pulse),
-                     rgba(Palette.signalIce, 0.34 * fade))
-        draw.sprites.append(.glow(centre + record.normal * (size * 0.98),
-                                  size: node.radius * 0.7,
-                                  color: Palette.signal,
-                                  opacity: 0.55 * fade))
-        draw.sprites.append(.glow(centre - record.normal * (node.radius * 0.92),
-                                  size: node.radius * 1.15,
-                                  color: Palette.gold,
-                                  opacity: 0.55 * fade))
-    }
-
     func makeRenderState(viewSize: CGSize) -> RenderState {
         let focusDistance = max(0.001, camera.position.length)
-        // The native composer's full-resolution DOF pass removes more energy
-        // from the bright-pass threshold than the web's BokehPass; the 1.5×
-        // calibration restores the web's bloom envelope at the same distance.
-        // Keep the bloom envelope stable through close inspection. The old
-        // close-up ramp attenuated strength, shrank the radius and finally
-        // disabled bloom near the camera, which made zoomed-in studies look
-        // flat. DOF still eases close-up; bloom does not.
+        // The 1.5× calibration keeps the bloom envelope stable through close
+        // inspection. DOF eases close-up; bloom does not.
         let hostMode = displayedGlobe == .host
         let densityScale = min(1, 24.0 / Float(max(1, nodes.count)))
-        let bloomStrength = (0.4 + trauma * 0.32) * 1.5 * (hostMode ? 0.18 : densityScale)
+        let bloomStrength = (0.4 + dns.trauma * 0.32) * 1.5 * (hostMode ? 0.18 : densityScale)
         let bloomRadius: Float = 0.5
         var shake = Vec3.zero
         if motionMode != .off {
-            let amount = trauma * trauma * 0.38
+            let amount = dns.trauma * dns.trauma * 0.38
             if amount > 0.0005 {
                 shake = Vec3(sin(realTime * 91.7) * amount * 0.24,
                              sin(realTime * 73.3 + 1.7) * amount * 0.18,
@@ -2185,11 +1584,15 @@ final class AtlasRuntime: NSObject, ObservableObject {
         let dnsDetail = deck.dnsDetail
         let hostDetail = deck.hostDetail
 
-        var dnsLayer = RenderLayer(drawList: dot, offset: .zero,
-                                   stageScale: stageScale, detail: dnsDetail)
+        var dnsLayer = RenderLayer(drawList: dns.dot, offset: .zero,
+                                   stageScale: dns.stageScale, detail: dnsDetail)
         var hostLayer = RenderLayer(drawList: hostScene.draw, offset: .zero,
                                     stageScale: 1, detail: hostDetail)
-        let backgroundOffset = deckActive ? deckWorldBackground : rearOffset()
+        // Impact trauma shakes the active globe only. The layer offset is
+        // subtracted from the camera before the shake is added, so adding the
+        // shake here cancels it for the inactive globe.
+        let backgroundOffset = (deckActive ? deckWorldBackground : rearOffset())
+            + (deckActive ? .zero : shake)
         switch deck.backgroundKind {
         case .dns: dnsLayer.offset = backgroundOffset
         case .host: hostLayer.offset = backgroundOffset
@@ -2224,7 +1627,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
             renderCamera.pan = .zero
         }
         let focusCenter = deckActive ? deckWorldBackground : Vec3.zero
-        let focus = max(4, renderCamera.position.distance(to: focusCenter) - globeRadius * 0.7)
+        let focus = max(4, renderCamera.position.distance(to: focusCenter) - dns.globeRadius * 0.7)
 
         return RenderState(
             camera: renderCamera,
@@ -2242,452 +1645,48 @@ final class AtlasRuntime: NSObject, ObservableObject {
             dofMaxBlur: 0.006 * dofStrength,
             dofEnabled: false,
             focusCenter: focusCenter,
-            focusRadius: globeRadius
+            focusRadius: dns.globeRadius
         )
     }
 
-    // ── queries / signals / impacts ──────────────────────────────────────
 
-    private func selectionAllows(deviceId: String, destinationId: String) -> Bool {
-        guard let selection else { return true }
-        switch selection {
-        case .device(let id): return deviceId == id
-        case .destination(let id): return destinationId == id
-        case .path(let d, let dest): return deviceId == d && destinationId == dest
-        }
+    // ── scene entry points ───────────────────────────────────────────────
+
+    func handleQuery(_ event: QueryEvent) { dns.handleQuery(event) }
+    func handleLocal(_ event: LocalTrafficEvent) { dns.handleLocal(event) }
+    func updateLabels(force: Bool) { dns.updateLabels(force: force) }
+    func applyVisualState() { dns.applyVisualState() }
+    func impactStyle(for destination: Destination) -> String { dns.impactStyle(for: destination) }
+    func birthStyle(for destination: Destination, override: String? = nil) -> String {
+        dns.birthStyle(for: destination, override: override)
+    }
+    func randomDeathStyle() -> String { dns.randomDeathStyle() }
+    func setWireVisibility(destinationId: String, visible: Bool) {
+        dns.setWireVisibility(destinationId: destinationId, visible: visible)
+    }
+    func setWireVisibility(deviceId: String, visible: Bool) {
+        dns.setWireVisibility(deviceId: deviceId, visible: visible)
     }
 
-    private func handleQuery(_ event: QueryEvent) {
-        guard ready else { return }
-        guard activeGlobe == .dns, !deckActive else { return }
-        if let status = filter.status, event.status != status { return }
-        guard selectionAllows(deviceId: event.deviceId, destinationId: event.destinationId) else { return }
-        guard let node = nodeByDest[event.destinationId],
-              let wire = wireByKey["\(event.deviceId)::\(event.destinationId)"] else { return }
-        let destination = node.destinationRef!
-        let wasHidden = !destination.windowVisible
-        if node.destroyed && !wasHidden { return }
-        if signals.count > 44 { return }
 
-        // An aged-out device is not shown yet. First recompute where it belongs
-        // on the shell and let the query draw a wire from that empty position
-        // to the destination. The arrival callback then reveals the device with
-        // one of its appearance studies.
-        let deviceWasHidden = !event.device.windowVisible && !event.device.pendingAppearance
-        if deviceWasHidden {
-            event.device.pendingAppearance = true
-            revealDeviceLocation(event.device, wire: wire, node: node)
-        }
-        if wasHidden {
-            wire.setVisible(true)
-            wire.setDim(0.55)
-        }
-        let key = "\(event.deviceId)::\(event.destinationId)"
-        signalCounts[key, default: 0] += 1
-        wire.setSignalActive(true)
-        let control = wire.controlPoints
-        let length = CatmullRom(points: control).length()
-        let duration = max(0.38, min(1.25, 0.42 + length * 0.05))
-        if deviceWasHidden {
-            let link = DeviceAppearanceLink(device: event.device, wire: wire, duration: duration) { [weak self] in
-                self?.finishDeviceArrival(event.device, wire: wire)
-            }
-            deviceAppearanceLinks.append(link)
-        }
-        let arrival = CatmullRom(points: control, closed: false,
-                                 curveType: "centripetal", tension: 0.5)
-        let signal = Signal(controlPoints: control, duration: duration,
-                            seed: UInt32(truncatingIfNeeded: Int(elapsed * 1000) ^ control.count)) { [weak self, weak node, weak wire] in
-            guard let self, let node, let wire else { return }
-            let next = max(0, (self.signalCounts[key] ?? 1) - 1)
-            if next == 0 { self.signalCounts.removeValue(forKey: key) }
-            else { self.signalCounts[key] = next }
-            wire.setSignalActive(next > 0)
-            if wasHidden {
-                if !destination.windowVisible {
-                    destination.windowVisible = true
-                    self.birthDestination(destination, style: destination.birthId)
-                    self.refreshUI()
-                }
-                return
-            }
-            if node.destroyed { return }
-            // Use the curve snapshot the packet actually travelled, exactly as
-            // the lab's `snapshot.getTangentAt(1)`. The live wire tangent can
-            // drift if the destination moved while the packet was in flight.
-            self.registerImpact(node: node, normal: arrival.tangentAt(1), event: event)
-        }
-        signals.append(signal)
-        deviceById[event.deviceId]?.onFire()
-    }
-
-    /// Blocked destinations own the red containment/redaction pair; allowed
-    /// destinations never receive either study. This mirrors the lab's field
-    /// mapping (the red orb answers with the 360° shield and is sealed with a
-    /// redaction) and keeps the two tones mutually exclusive even if a source
-    /// document ever carries a mismatched style id.
-    private func impactStyle(for destination: Destination) -> String {
-        if destination.status == .blocked { return "containment" }
-        if motionMode == .calm { return "eclipse" }
-        let candidate = destination.impactId
-        if candidate == "containment" || !Effects.impacts.contains(where: { $0.id == candidate }) {
-            return "eclipse"
-        }
-        return candidate
-    }
-
-    private func birthStyle(for destination: Destination, override: String? = nil) -> String {
-        if destination.status == .blocked { return "redaction" }
-        if let override, override != "redaction",
-           Effects.births.contains(where: { $0.id == override }) {
-            return override
-        }
-        return destination.birthId == "redaction" ? "spiral" : destination.birthId
-    }
-
-    private func registerImpact(node: NodeView, normal: Vec3, event: QueryEvent?) {
-        let destination = node.destinationRef!
-        let blocked = destination.status == .blocked
-        let n = normal.normalized
-        node.onHit(n, recoil: recoilEnabled && !blocked)
-        hitCounts.impact += 1
-
-        let style = impactStyle(for: destination)
-        let meta = Effects.meta(impact: style)
-        if motionMode != .off {
-            if effects.countByKind("impact") < 24 {
-                let R = max(0.26, node.radius * 1.55)
-                var ctx = EffectContext(camera: camera, node: node, radius: R,
-                                        point: node.basePosition, normal: n,
-                                        elapsed: elapsed, onShake: { [weak self] amount in
-                                            self?.trauma = min(1, (self?.trauma ?? 0) + amount * 0.55)
-                                        }, rng: rng)
-                ctx.offset = .zero
-                let effect = Effects.impact(style, ctx: ctx)
-                effects.add(effect, node: node, origin: node.basePosition,
-                            kind: "impact")
-            }
-            if !blocked && motionMode == .cinematic {
-                trauma = max(trauma, 0.42)
-            }
-        }
-        lastImpact = ImpactRecord(destinationId: destination.id, blocked: blocked,
-                                  at: elapsed, normal: n, point: node.basePosition,
-                                  impactId: meta.id, impactName: "\(meta.key) · \(meta.name)")
-        hitGeometryReplayAt = nil
-        flashDestinationLabel(destination.id, duration: 1.7)
-        inspectorRevision += 1
-    }
-
-    private func handleLocal(_ event: LocalTrafficEvent) {
-        // The layout's pull index mirrors network.localActivity; index it even
-        // when the visual flow is skipped (paused/hidden), matching the old
-        // per-frame dictionary read.
-        localWeights[event.source.id, default: [:]][event.target.id, default: 0] += 1
-        localWeights[event.target.id, default: [:]][event.source.id, default: 0] += 1
-        guard let sourceView = deviceById[event.source.id],
-              let targetView = deviceById[event.target.id] else { return }
-        // A local flow is still a visual claim that both orbs are on stage.
-        guard sourceView.deviceRef.windowVisible,
-              targetView.deviceRef.windowVisible else { return }
-        if paused { return }
-        if signals.count > 52 { return }
-        let from = sourceView.position
-        let to = targetView.position
-        var points: [Vec3] = []
-        for i in 0...20 {
-            let t = Float(i) / 20
-            let radial = from.lerp(to, t).normalized
-            let lift = 0.34 + sin(Float.pi * t) * 0.62
-            points.append(radial * (globeRadius + lift))
-        }
-        let curve = CatmullRom(points: points, closed: false, curveType: "centripetal", tension: 0.5)
-        let sampled = (0...72).map { curve.pointAt(Float($0) / 72) }
-        let tightPositions = GeometryKit.tube(points: sampled, radius: 0.018, tubularSegments: 72, radialSegments: 5)
-        let widePositions = GeometryKit.tube(points: sampled, radius: 0.06, tubularSegments: 72, radialSegments: 5)
-        let ice = Palette.signalIce
-        let tight = tightPositions.map { TriangleVertex(position: SIMD4($0, 1), color: rgba(ice, 0.42)) }
-        let wide = widePositions.map { TriangleVertex(position: SIMD4($0, 1), color: rgba(ice, 0.065)) }
-        localTraces.append(LocalTrace(baseTriangles: tight + wide, duration: 1.8))
-        for view in [sourceView, targetView] {
-            ringTraces.append(RingTrace(center: view.position + view.normal * 0.035,
-                                        normal: view.normal, duration: 0.9,
-                                        baseAlpha: 0.46))
-        }
-        sourceView.onFire()
-        let localCurve = CatmullRom(points: points, closed: false, curveType: "centripetal", tension: 0.5)
-        let duration = max(0.62, min(1.25, 0.36 + localCurve.length() * 0.045))
-        let signal = Signal(controlPoints: points, duration: duration) { [weak targetView] in
-            targetView?.onFire()
-        }
-        signals.append(signal)
-        localFlowCount += 1
-    }
-
-    private(set) var localFlowCount = 0
-
-    // ── births / deaths / windows ────────────────────────────────────────
-
-    private func setWireVisibility(destinationId: String, visible: Bool) {
-        for wire in wires where wire.nodeView.destinationRef?.id == destinationId {
-            let deviceVisible = wire.deviceView.deviceRef?.windowVisible ?? true
-            let next = visible && deviceVisible
-            wire.setVisible(next)
-            if next { wire.setDim(1) }
-        }
-    }
-
-    private func setWireVisibility(deviceId: String, visible: Bool) {
-        for wire in wires where wire.deviceView.deviceRef?.id == deviceId {
-            let destinationVisible = wire.nodeView.destinationRef?.windowVisible ?? true
-            let next = visible && destinationVisible
-            wire.setVisible(next)
-            if next { wire.setDim(1) }
-        }
-    }
-
-    private func pulseDeviceRing(_ view: DeviceView) {
-        guard motionMode != .off, !reducedMotion else { return }
-        ringTraces.append(RingTrace(center: view.position + view.normal * 0.035,
-                                    normal: view.normal, duration: 0.9, baseAlpha: 0.46))
-    }
-
-    /// Place an aged-out device back on the current shell radius and rebuild
-    /// the query edge from that relative location. The wire starts empty and
-    /// grows as the pulse travels; the orb itself stays hidden until arrival.
-    private func revealDeviceLocation(_ device: Device, wire: WireView, node: NodeView) {
-        device.surface = device.normal * globeRadius
-        guard let view = deviceById[device.id] else { return }
-        view.setSurfacePosition(device.surface, device.normal)
-        wire.setGlobePath(from: view.position, to: node.basePosition,
-                          normal: view.normal, globeRadius: globeRadius)
-        wire.reveal = 0
-        wire.setVisible(true)
-        wire.setDim(0.55)
-    }
-
-    private func updateDeviceAppearances(_ dt: Float) {
-        guard !deviceAppearanceLinks.isEmpty, dt > 0 else { return }
-        for index in deviceAppearanceLinks.indices.reversed() {
-            var link = deviceAppearanceLinks[index]
-            link.t = min(1, link.t + dt / max(0.001, link.duration))
-            link.wire.reveal = link.t
-            if link.t >= 1 {
-                deviceAppearanceLinks.remove(at: index)
-                link.wire.reveal = 1
-                link.onArrive()
-            } else {
-                deviceAppearanceLinks[index] = link
-            }
-        }
-    }
-
-    private func finishDeviceArrival(_ device: Device, wire: WireView) {
-        guard let view = deviceById[device.id] else { return }
-        device.pendingAppearance = false
-        device.windowVisible = true
-        view.setSurfacePosition(device.surface, device.normal)
-        let styles = DeviceView.AppearanceStyle.allCases
-        let style = styles[Int(rng.next() * Float(styles.count)) % styles.count]
-        view.setWindowVisible(true, style: style)
-        wire.reveal = 1
-        setWireVisibility(deviceId: device.id, visible: true)
-        pulseDeviceRing(view)
-        windowStats = network.windowStats()
-        updateLabels(force: true)
-        applyVisualState()
-    }
+    // ── presence ─────────────────────────────────────────────────────────
 
     func birthDestination(_ destination: Destination, fromBoot: Bool = false, style: String? = nil,
                           forceStyle: Bool = false) {
-        guard let node = nodeByDest[destination.id] else { return }
-        let id = forceStyle ? (style ?? destination.birthId) : birthStyle(for: destination, override: style)
-        let meta = Effects.meta(birth: id)
-        effects.cancel("death:\(destination.id)")
-        effects.cancel("birth:\(destination.id)")
-        node.destroyed = false
-        node.setPresence(0)
-        setWireVisibility(destinationId: destination.id, visible: true)
-        let R = max(0.26, node.radius * 1.6)
-        let ctx = EffectContext(camera: camera, node: node, radius: R,
-                                point: node.basePosition, normal: .up,
-                                elapsed: elapsed, onShake: { [weak self] amount in
-                                    self?.trauma = min(1, (self?.trauma ?? 0) + amount * 0.55)
-                                }, rng: rng)
-        let effect = Effects.birth(meta.id, ctx: ctx, node: node)
-        effects.add(effect, node: node, origin: node.basePosition,
-                    key: "birth:\(destination.id)", kind: "birth")
-        hitCounts.birth += 1
-        flashDestinationLabel(destination.id, duration: 2.6)
-        applyVisualState()
-        _ = fromBoot
+        dns.birthDestination(destination, fromBoot: fromBoot, style: style, forceStyle: forceStyle)
     }
 
     func retireDestination(_ destination: Destination, style: String? = nil, restoreAfter: Float = 0) {
-        guard let node = nodeByDest[destination.id], !node.destroyed else { return }
-        let meta: EffectMeta
-        if let style, Effects.deaths.contains(where: { $0.id == style }) {
-            meta = Effects.meta(death: style)
-        } else {
-            // Natural window expiry is not indexed by destination any more:
-            // every orb that leaves the stage rolls one of the remaining
-            // disappearance studies (D1–D2), so a busy lifetime change does
-            // not replay the same death in the same order.
-            meta = Effects.meta(death: randomDeathStyle())
-        }
-        effects.cancel("birth:\(destination.id)")
-        effects.cancel("impact:\(destination.id)")
-        node.destroyed = true
-        node.stopRecoil()
-        node.setPresence(0)
-        setWireVisibility(destinationId: destination.id, visible: false)
-        let R = max(0.26, node.radius * 1.6)
-        let ctx = EffectContext(camera: camera, node: node, radius: R,
-                                point: node.basePosition, normal: .up,
-                                elapsed: elapsed, onShake: { [weak self] amount in
-                                    self?.trauma = min(1, (self?.trauma ?? 0) + amount * 0.55)
-                                }, rng: rng)
-        let effect = Effects.death(meta.id, ctx: ctx, node: node)
-        effects.add(effect, node: node, origin: node.basePosition,
-                    key: "death:\(destination.id)", kind: "death")
-        hitCounts.death += 1
-        flashDestinationLabel(destination.id, duration: 2.0)
-        if restoreAfter > 0 {
-            after(restoreAfter) { [weak self] in
-                self?.restoreDestination(destination, birth: true)
-            }
-        }
-        applyVisualState()
-    }
-
-    /// World-clock disappearance roll. The four studies are deliberately
-    /// equiprobable and the roll goes through the scene RNG, so a deterministic
-    /// snapshot seed still reproduces the same sequence of erasures.
-    private func randomDeathStyle() -> String {
-        let index = Int(rng.next() * Float(Effects.deaths.count)) % Effects.deaths.count
-        return Effects.deaths[index].id
+        dns.retireDestination(destination, style: style, restoreAfter: restoreAfter)
     }
 
     func restoreDestination(_ destination: Destination, birth: Bool = false) {
-        guard let node = nodeByDest[destination.id] else { return }
-        effects.cancel("death:\(destination.id)")
-        effects.cancel("birth:\(destination.id)")
-        node.destroyed = false
-        node.stopRecoil()
-        node.setPresence(1)
-        setWireVisibility(destinationId: destination.id, visible: true)
-        if birth { birthDestination(destination, style: destination.birthId) }
-        applyVisualState()
+        dns.restoreDestination(destination, birth: birth)
     }
 
     @discardableResult
-    private func applyWindow(animate: Bool, initial: Bool) -> Bool {
-        // Replay owns presence while it runs: a body that was outside the live
-        // history window is born by its first replayed query and should stay
-        // on stage for the rest of the range. Returning to live re-applies the
-        // live window immediately.
-        if isReplay { return false }
-        let now = Date().timeIntervalSince1970 * 1000
-        let windowMS = Double(windowHours) * 3_600_000
-        var changed = false
-        var becameVisible: [Destination] = []
-        var becameHidden: [Destination] = []
-        var becameVisibleDevices: [Device] = []
-        var becameHiddenDevices: [Device] = []
-        let canAnimate = animate && !paused
-
-        // Update both endpoint flags before any wire decision: a wire is only
-        // present while its device and its destination are inside the window.
-        for device in network.devices {
-            if device.pendingAppearance { continue }
-            let visible = now - device.lastSeen <= windowMS
-            let was = device.windowVisible
-            if was != visible { changed = true }
-            device.windowVisible = visible
-            if !visible {
-                if canAnimate {
-                    if was { becameHiddenDevices.append(device) }
-                } else {
-                    deviceById[device.id]?.setWindowVisible(false, animated: false)
-                    setWireVisibility(deviceId: device.id, visible: false)
-                }
-            } else if !initial && !was {
-                if canAnimate {
-                    becameVisibleDevices.append(device)
-                } else {
-                    deviceById[device.id]?.setWindowVisible(true, animated: false)
-                    setWireVisibility(deviceId: device.id, visible: true)
-                }
-            }
-        }
-
-        for destination in network.destinations {
-            let visible = now - destination.lastSeen <= windowMS
-            let was = destination.windowVisible
-            if was != visible { changed = true }
-            destination.windowVisible = visible
-            guard let node = nodeByDest[destination.id] else { continue }
-            if !visible {
-                if canAnimate {
-                    if was { becameHidden.append(destination) }
-                } else {
-                    node.destroyed = true
-                    node.setPresence(0)
-                    setWireVisibility(destinationId: destination.id, visible: false)
-                }
-            } else if !initial && !was {
-                if canAnimate {
-                    becameVisible.append(destination)
-                } else {
-                    node.destroyed = false
-                    node.setPresence(1)
-                    setWireVisibility(destinationId: destination.id, visible: true)
-                }
-            }
-        }
-        if let selection {
-            let hiddenDevice = selection.deviceId
-                .flatMap { network.deviceById[$0] }?.windowVisible == false
-            let hiddenDestination = selection.destinationId
-                .flatMap { network.destinationById[$0] }?.windowVisible == false
-            if hiddenDevice || hiddenDestination { select(nil) }
-        }
-        if let hover {
-            let hiddenDevice = hover.deviceId
-                .flatMap { network.deviceById[$0] }?.windowVisible == false
-            let hiddenDestination = hover.destinationId
-                .flatMap { network.destinationById[$0] }?.windowVisible == false
-            if hiddenDevice || hiddenDestination { setHovered(nil) }
-        }
-        if canAnimate {
-            for (index, destination) in becameHidden.enumerated() {
-                after(Float(index) * 0.06) { [weak self] in
-                    guard let self, !destination.windowVisible else { return }
-                    self.retireDestination(destination)
-                }
-            }
-            for (index, destination) in becameVisible.enumerated() {
-                after(Float(index) * 0.09) { [weak self] in
-                    guard let self, destination.windowVisible else { return }
-                    self.birthDestination(destination, style: destination.birthId)
-                }
-            }
-        }
-        for device in becameHiddenDevices {
-            deviceById[device.id]?.setWindowVisible(false)
-            setWireVisibility(deviceId: device.id, visible: false)
-            if let view = deviceById[device.id] { pulseDeviceRing(view) }
-        }
-        for device in becameVisibleDevices {
-            deviceById[device.id]?.setWindowVisible(true)
-            setWireVisibility(deviceId: device.id, visible: true)
-            if let view = deviceById[device.id] { pulseDeviceRing(view) }
-        }
-        network.windowHours = windowHours
-        updateLabels(force: true)
-        applyVisualState()
-        refreshUI()
-        return changed
+    func applyWindow(animate: Bool, initial: Bool) -> Bool {
+        dns.applyWindow(animate: animate, initial: initial)
     }
 
     func setWindowHours(_ hours: Float) {
@@ -2708,11 +1707,11 @@ final class AtlasRuntime: NSObject, ObservableObject {
         if let next {
             switch next {
             case .device(let id):
-                guard deviceById[id] != nil else { return }
+                guard dns.deviceById[id] != nil else { return }
             case .destination(let id):
-                guard nodeByDest[id] != nil else { return }
+                guard dns.nodeByDest[id] != nil else { return }
             case .path(let deviceId, let destinationId):
-                guard wireByKey["\(deviceId)::\(destinationId)"] != nil else { return }
+                guard dns.wireByKey["\(deviceId)::\(destinationId)"] != nil else { return }
             }
         }
         let resolved: Selection? = (toggle && selection == next) ? nil : next
@@ -2751,30 +1750,14 @@ final class AtlasRuntime: NSObject, ObservableObject {
         applyVisualState()
     }
 
+
     func clearEffectsForSnapshot() {
-        effects.clear()
-        timers.removeAll()
-        signals.removeAll()
-        deviceAppearanceLinks.removeAll()
-        signalCounts.removeAll()
-        eventLabels.removeAll()
-        lastImpact = nil
-        hitGeometryReplayAt = nil
-        for node in nodes {
-            if node.destinationRef?.windowVisible == true {
-                node.destroyed = false
-                node.stopRecoil()
-                node.setPresence(1)
-                setWireVisibility(destinationId: node.destinationRef.id, visible: true)
-            }
-        }
-        labelMode = .off
-        updateLabels(force: true)
-        rebuildDrawListForSnapshot()
+        dns.clearEffectsForSnapshot()
+        hostScene.clearEffectsForSnapshot()
     }
 
     func rebuildDrawListForSnapshot() {
-        buildDrawList(simDt: 0)
+        dns.rebuildDrawListForSnapshot()
     }
 
     func setCameraForSnapshot(position: Vec3, target: Vec3) {
@@ -2840,7 +1823,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
         let offset = rearOffset()
         let backgroundDepth = offset.dot(camera.forward)
         let activeDepth = camera.position.distance(to: orbitTarget)
-        if backgroundDepth > 0, backgroundDepth < activeDepth + globeRadius + 4 {
+        if backgroundDepth > 0, backgroundDepth < activeDepth + dns.globeRadius + 4 {
             failed.append("background-not-behind")
         }
         debugShowHostGlobe()
@@ -2911,21 +1894,21 @@ final class AtlasRuntime: NSObject, ObservableObject {
         for meta in Effects.impacts {
             debugPreviewEffect(kind: "impact", style: meta.id, destinationId: nil,
                                age: 1.0 / 60.0, viewSize: frameViewSize)
-            if effects.entries.isEmpty { failed.append(meta.id) }
-            effects.clear()
+            if dns.effects.entries.isEmpty { failed.append(meta.id) }
+            dns.effects.clear()
         }
-        effects.clear()
+        dns.effects.clear()
         for meta in Effects.births {
             debugPreviewEffect(kind: "birth", style: meta.id, destinationId: nil,
                                age: 1.0 / 60.0, viewSize: frameViewSize)
-            if effects.entries.isEmpty { failed.append(meta.id) }
-            effects.clear()
+            if dns.effects.entries.isEmpty { failed.append(meta.id) }
+            dns.effects.clear()
         }
         for meta in Effects.deaths {
             debugPreviewEffect(kind: "death", style: meta.id, destinationId: nil,
                                age: 1.0 / 60.0, viewSize: frameViewSize)
-            if effects.entries.isEmpty { failed.append(meta.id) }
-            effects.clear()
+            if dns.effects.entries.isEmpty { failed.append(meta.id) }
+            dns.effects.clear()
         }
         for node in nodes {
             if node.destinationRef.windowVisible {
@@ -2954,9 +1937,9 @@ final class AtlasRuntime: NSObject, ObservableObject {
                 failed.append("red-birth-not-redaction")
             }
             if let edge = destination.edges.max(by: { $0.liveQueries < $1.liveQueries }),
-               let wire = wireByKey["\(edge.deviceId)::\(edge.destinationId)"],
-               let blockedNode = nodeByDest[destination.id],
-               let sourceView = deviceById[edge.deviceId] {
+               let wire = dns.wireByKey["\(edge.deviceId)::\(edge.destinationId)"],
+               let blockedNode = dns.nodeByDest[destination.id],
+               let sourceView = dns.deviceById[edge.deviceId] {
                 // Shield contact is -inbound; it must face the source, not the
                 // back of the destination.
                 let sourceDir = (sourceView.position - blockedNode.basePosition).normalized
@@ -3005,7 +1988,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
                 failed.append("recoil-not-forward")
             }
             // The visible assembly must take one impulse and settle. A
-            // damped sine used to swing back through the anchor, which read
+            // damped sine would swing back through the anchor, which reads
             // as a bounce rather than a blast.
             var minReturn: Float = .greatestFiniteMagnitude
             for _ in 0..<45 {
@@ -3053,7 +2036,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
             failed.append("zoom-input")
         }
         // Auto-orbit must move the camera on its own once the boot flight is
-        // finished. This is the path the web's OrbitControls.autoRotate owns.
+        // finished.
         let savedPaused = paused
         paused = false
         spinEnabled = true
@@ -3072,8 +2055,8 @@ final class AtlasRuntime: NSObject, ObservableObject {
         // render state at a close and a wide camera distance.
         let savedPosition = camera.position
         let savedTarget = orbitTarget
-        let savedTrauma = trauma
-        trauma = 0
+        let savedTrauma = dns.trauma
+        dns.trauma = 0
         camera.position = Vec3(0, 0, 13)
         orbitTarget = Vec3(0, 0, 0)
         camera.target = orbitTarget
@@ -3089,7 +2072,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
         camera.position = savedPosition
         orbitTarget = savedTarget
         camera.target = savedTarget
-        trauma = savedTrauma
+        dns.trauma = savedTrauma
         settlePostForSnapshot()
         return failed
     }
@@ -3166,6 +2149,29 @@ final class AtlasRuntime: NSObject, ObservableObject {
         dragging = false
         panDragging = false
 
+        // Active-globe impact shake must not shake the inactive layer.
+        let savedTrauma = dns.trauma
+        let savedMotionMode = motionMode
+        motionMode = .cinematic
+        dns.trauma = 0
+        let stillState = makeRenderState(viewSize: frameViewSize)
+        dns.trauma = 1
+        let shakenState = makeRenderState(viewSize: frameViewSize)
+        if stillState.layers.count >= 2, shakenState.layers.count >= 2 {
+            let stillOffset = stillState.layers[0].offset
+            let shakenOffset = shakenState.layers[0].offset
+            if simd_distance(stillOffset, shakenOffset) < 0.0001 {
+                failed.append("background-shake-cancel")
+            }
+            if shakenState.layers[1].offset.length > 0.0001 {
+                failed.append("active-layer-shifted")
+            }
+        } else {
+            failed.append("background-shake-layers")
+        }
+        dns.trauma = savedTrauma
+        motionMode = savedMotionMode
+
         // Alias display rules. A device alias replaces the title but never the
         // IP; a destination alias still follows the "show both" preference.
         let savedDeviceAliases = deviceAliases
@@ -3211,6 +2217,44 @@ final class AtlasRuntime: NSObject, ObservableObject {
         } else {
             failed.append("destination-alias-fixture")
         }
+        // HOST aliases are their own keyspace: app ids for shell bodies and
+        // domain/IP:port names for interior destinations.
+        let savedHostAppAliases = hostAppAliases
+        let savedHostDestinationAliases = hostDestinationAliases
+        let hostFixture = HostDemo.snapshot(includeLocal: true)
+        if let app = hostFixture.apps.first, let domain = hostFixture.domains.first {
+            setShowAliasWithAddress(false)
+            setHostAppAlias("Lab app", for: app)
+            if hostAppDisplayName(app) != "Lab app" {
+                failed.append("host-app-alias-title")
+            }
+            setHostDestinationAlias("Lab destination", for: domain)
+            if hostDestinationDisplayName(domain) != "Lab destination" {
+                failed.append("host-destination-alias-title")
+            }
+            if hostDestinationOriginalText(domain) != nil {
+                failed.append("host-destination-alias-hides-original")
+            }
+            setShowAliasWithAddress(true)
+            if hostDestinationOriginalText(domain) != domain.name {
+                failed.append("host-destination-alias-show-both")
+            }
+            setHostAppAlias("", for: app)
+            setHostDestinationAlias("", for: domain)
+            if hostAppAlias(app) != nil || hostDestinationAlias(domain) != nil {
+                failed.append("host-alias-clear")
+            }
+        } else {
+            failed.append("host-alias-fixture")
+        }
+        hostAppAliases = savedHostAppAliases
+        hostDestinationAliases = savedHostDestinationAliases
+        hostScene.setHostAliases(apps: savedHostAppAliases,
+                                 destinations: savedHostDestinationAliases,
+                                 showBoth: savedShowBoth)
+        AtlasPreferences.hostAppAliases = savedHostAppAliases
+        AtlasPreferences.hostDestinationAliases = savedHostDestinationAliases
+
         deviceAliases = savedDeviceAliases
         destinationAliases = savedDestinationAliases
         showAliasWithAddress = savedShowBoth
@@ -3256,6 +2300,24 @@ final class AtlasRuntime: NSObject, ObservableObject {
         if !labels.labels.contains(where: { $0.id == "dev-\(id)" }) {
             failed.append("background-device-hover-label")
         }
+        let backLabelOpacity = labels.labels.first(where: { $0.id == "dev-\(id)" })?.opacity
+        if let front = devices.first(where: { $0.facing > 0.2 && $0.deviceRef.id != id }) {
+            setHovered(.device(front.deviceRef.id))
+            let frontLabelOpacity = labels.labels.first(where: {
+                $0.id == "dev-\(front.deviceRef.id)"
+            })?.opacity
+            if let backLabelOpacity, let frontLabelOpacity {
+                if !(backLabelOpacity < frontLabelOpacity - 0.02) {
+                    failed.append("dns-focus-back-label")
+                }
+                if frontLabelOpacity < 0.9 { failed.append("dns-focus-front-label") }
+                if backLabelOpacity > 0.8 { failed.append("dns-focus-back-label-too-bright") }
+            } else {
+                failed.append("dns-focus-label-missing")
+            }
+        } else {
+            failed.append("dns-focus-front-fixture")
+        }
         setHovered(previousHover)
 
         let start = camera.position
@@ -3271,12 +2333,36 @@ final class AtlasRuntime: NSObject, ObservableObject {
         if camera.position.distance(to: start) < 1 {
             failed.append("focus-did-not-move")
         }
-        if minRadius < globeRadius * 1.2 {
+        if minRadius < dns.globeRadius * 1.2 {
             failed.append("focus-cut-through-globe")
         }
         if selection?.deviceId != id {
             failed.append("focus-lost-selection")
         }
+        return failed
+    }
+
+    /// Demo mode must populate both globes: deterministic DNS devices and
+    /// host apps/domains, not an empty HOST field.
+    func debugDemoHostChecks() -> [String] {
+        var failed: [String] = []
+        if network.devices.isEmpty || network.destinations.isEmpty {
+            failed.append("demo-dns-empty")
+        }
+        let saved = hostSnapshot
+        startHostDemo()
+        if !hostDemoActive { failed.append("demo-host-flag") }
+        if hostSnapshot.apps.count < 5 { failed.append("demo-host-apps") }
+        if hostSnapshot.domains.count < 5 { failed.append("demo-host-domains") }
+        if hostScene.snapshot.apps.count != hostSnapshot.apps.count {
+            failed.append("demo-host-scene-apps")
+        }
+        if !hostScene.appNodes.isEmpty && hostScene.domainNodes.isEmpty {
+            failed.append("demo-host-scene-domains")
+        }
+        stopHostDemo()
+        if hostDemoActive { failed.append("demo-host-stop") }
+        applyHostSnapshot(saved)
         return failed
     }
 
@@ -3294,7 +2380,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
         if Format.ago(now - 3 * 86_400_000) != "3 days ago" { failed.append("relative-days") }
 
         guard let device = network.devices.first(where: { $0.lastSeen > 0 }),
-              let view = deviceById[device.id] else {
+              let view = dns.deviceById[device.id] else {
             paused = savedPaused
             return ["no-device-for-window"]
         }
@@ -3471,15 +2557,15 @@ final class AtlasRuntime: NSObject, ObservableObject {
         if replayTime <= replayStart || replayTime >= replayEnd {
             failed.append("replay-seek")
         }
-        let before = replayCursor
+        let before = replay.cursor
         setReplayRate(600)
         advanceForSnapshot(seconds: 0.3)
-        if replayCursor <= before { failed.append("replay-advance") }
+        if replay.cursor <= before { failed.append("replay-advance") }
 
         setPaused(true)
-        let pausedAt = replayCursor
+        let pausedAt = replay.cursor
         advanceForSnapshot(seconds: 0.3)
-        if abs(replayCursor - pausedAt) > 0.01 { failed.append("replay-pause") }
+        if abs(replay.cursor - pausedAt) > 0.01 { failed.append("replay-pause") }
         setPaused(false)
 
         seekReplay(fraction: 0.995, preRoll: false)
@@ -3497,46 +2583,66 @@ final class AtlasRuntime: NSObject, ObservableObject {
         return failed
     }
 
+    /// Deterministic headless dump used by verification. It reports
+    /// simulation state, not wall-clock text.
+    func debugSceneProbe() -> String {
+        func vector(_ value: Vec3) -> String {
+            String(format: "%.5f,%.5f,%.5f", value.x, value.y, value.z)
+        }
+        func point(_ value: CGPoint) -> String {
+            String(format: "%.3f,%.3f", value.x, value.y)
+        }
+        func selectionText(_ value: Selection?) -> String {
+            switch value {
+            case .device(let id): return "device:\(id)"
+            case .destination(let id): return "destination:\(id)"
+            case .path(let device, let destination): return "path:\(device):\(destination)"
+            case nil: return "none"
+            }
+        }
+        var lines: [String] = []
+        lines.append("network devices=\(network.devices.count) destinations=\(network.destinations.count) edges=\(network.edges.count)")
+        lines.append("camera pos=\(vector(camera.position)) target=\(vector(camera.target)) up=\(vector(camera.up)) pan=\(String(format: "%.5f,%.5f", camera.pan.x, camera.pan.y)) fov=\(String(format: "%.3f", camera.fov))")
+        lines.append("sim elapsed=\(String(format: "%.5f", elapsed)) real=\(String(format: "%.5f", realTime)) radius=\(String(format: "%.5f", dns.globeRadius)) trauma=\(String(format: "%.5f", dns.trauma)) dof=\(String(format: "%.5f", dofStrength))")
+        lines.append("ui filter=\(filter.rawValue) labels=\(labelMode.rawValue) window=\(String(format: "%.4f", windowHours)) paused=\(paused) mode=\(mode == .replay ? "replay" : "live") selection=\(selectionText(selection)) hover=\(selectionText(hover))")
+        lines.append("stats totals=\(totals.queries),\(totals.blocked) window=\(windowStats.devices),\(windowStats.destinations),\(windowStats.allowed),\(windowStats.blockedDestinations) qps=\(String(format: "%.5f", qps)) feed=\(feed.count)/\(feedCount) pulse=\(pulseCurrent.allowed),\(pulseCurrent.blocked)")
+
+        let state = makeRenderState(viewSize: frameViewSize)
+        let draw = state.drawList
+        let meshCounts = draw.meshBatches.map { "\($0.count)" }.joined(separator: ",")
+        lines.append("draw lines=\(draw.lines.count) stageLines=\(draw.stageLines.count) points=\(draw.points.count) stagePoints=\(draw.stagePoints.count) ambient=\(draw.ambientPoints.count) sprites=\(draw.sprites.count) mesh=\(meshCounts) rings=\(draw.nodeRings.count) shocks=\(draw.shocks.count) planets=\(draw.planets.count) atmo=\(draw.planetAtmospheres.count) shells=\(draw.shockShells.count) shields=\(draw.shields.count) scans=\(draw.scans.count) discs=\(draw.discs.count) jets=\(draw.jets.count) atmospheres=\(draw.atmospheres.count)")
+        lines.append("render bloom=\(String(format: "%.5f", state.bloomStrength)) shake=\(vector(state.shake)) dofFocus=\(String(format: "%.5f", state.dofFocus)) dofEnabled=\(state.dofEnabled) focusCenter=\(vector(state.focusCenter)) layers=\(state.layers.map { "\(vector($0.offset)):\(String(format: "%.5f", $0.detail))" }.joined(separator: "|"))")
+
+        for node in nodes.sorted(by: { $0.id < $1.id }) {
+            guard let destination = node.destinationRef else { continue }
+            lines.append("node \(node.id) pos=\(vector(node.basePosition)) label=\(vector(node.labelPosition)) presence=\(String(format: "%.5f", node.presence)) wanted=\(node.labelWanted) visible=\(destination.windowVisible) status=\(destination.status.rawValue) q=\(destination.liveQueries) blocked=\(destination.liveBlocked) selected=\(node.selected) hovered=\(node.hovered) destroyed=\(node.destroyed)")
+        }
+        for device in devices.sorted(by: { $0.spec.id < $1.spec.id }) {
+            guard let model = device.deviceRef else { continue }
+            lines.append("device \(device.spec.id) pos=\(vector(device.position)) normal=\(vector(device.normal)) label=\(vector(device.labelPosition)) visible=\(device.windowVisible) presence=\(String(format: "%.5f", device.windowPresence)) display=\(String(format: "%.5f", device.displayVisibility)) pending=\(model.pendingAppearance) selected=\(device.selected) hovered=\(device.hovered)")
+        }
+        for wire in wires.sorted(by: { $0.edgeId < $1.edgeId }) {
+            lines.append("wire \(wire.edgeId) hidden=\(wire.hidden) dim=\(String(format: "%.5f", wire.dim)) reveal=\(String(format: "%.5f", wire.reveal)) signal=\(wire.signalActive) highlight=\(String(format: "%.5f", wire.highlight)) control=\(wire.controlPoints.count) end=\(vector(wire.end)) tangent=\(vector(wire.tangent))")
+        }
+        for label in labels.labels.sorted(by: { $0.id < $1.id }) {
+            lines.append("label \(label.id) kind=\(label.kind == .device ? "device" : "destination") tone=\(label.tone.rawValue) anchor=\(point(label.anchor)) size=\(String(format: "%.2f,%.2f", label.size.width, label.size.height)) selected=\(label.selected) hovered=\(label.hovered)")
+        }
+        lines.append("replay active=\(isReplay) progress=\(String(format: "%.6f", replayProgress)) total=\(replayTotal) buckets=\(replayBuckets.count) rate=\(String(format: "%.3f", replayRate)) finished=\(replayFinished) loading=\(replayLoading) feed=\(feed.count) recent=\(replay.recent.count)")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+
     func debugPreviewEffect(kind: String, style: String, destinationId: String?,
                             age: Float, viewSize: CGSize) {
-        paused = false
-        let destination = destinationId.flatMap { network.destinationById[$0] }
-            ?? network.destinations.sorted { $0.liveQueries > $1.liveQueries }.first
-        guard let destination, let node = nodeByDest[destination.id] else { return }
-        selection = .destination(destination.id)
-        effects.clear()
-        node.destroyed = false
-        node.stopRecoil()
-        node.setPresence(1)
-        setWireVisibility(destinationId: destination.id, visible: true)
-        switch kind {
-        case "birth":
-            birthDestination(destination, style: style, forceStyle: true)
-        case "death":
-            retireDestination(destination, style: style)
-        default:
-            let meta = Effects.meta(impact: style)
-            registerImpactPreview(node: node, meta: meta)
-        }
-        // Step only the scene; the demo source is driven by its own timer and
-        // must stay out of deterministic study captures.
-        var remaining = max(0, age)
-        while remaining > 0.00001 {
-            let dt = min(1.0 / 60.0, remaining)
-            updateFrame(dt: dt, viewSize: viewSize)
-            remaining -= dt
-        }
-        paused = true
-        settlePostForSnapshot()
-        rebuildDrawListForSnapshot()
-        updateLabels(force: true)
+        dns.debugPreviewEffect(kind: kind, style: style, destinationId: destinationId,
+                               age: age, viewSize: viewSize)
     }
 
     /// Snapshot helper: frame one destination at study distance while keeping
     /// the current viewing direction. Used for births/deaths, which do not
     /// publish an inbound hit axis.
     func debugFrameDestination(_ id: String) {
-        guard let node = nodeByDest[id] else { return }
+        guard let node = dns.nodeByDest[id] else { return }
         let direction = (camera.position - node.basePosition).normalized
         let distance = max(11.5, node.radius * 13)
         var position = node.basePosition + direction * distance
@@ -3547,8 +2653,8 @@ final class AtlasRuntime: NSObject, ObservableObject {
     /// Snapshot helper: frame the last hit along its inbound axis so a plane
     /// reads as a circle. Mirrors `faceHitCamera` without starting a flight.
     func debugFrameLastImpact(fromHitSide: Bool = false, fromSide: Bool = false) {
-        guard let record = lastImpact,
-              let node = nodeByDest[record.destinationId] else { return }
+        guard let record = dns.lastImpact,
+              let node = dns.nodeByDest[record.destinationId] else { return }
         let point = node.basePosition
         let distance = max(11.5, node.radius * 13)
         var position: Vec3
@@ -3627,7 +2733,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
     func setShowHitGeometry(_ enabled: Bool) {
         showHitGeometry = enabled
         AtlasPreferences.hitPlane = enabled
-        if enabled { hitGeometryReplayAt = elapsed }
+        if enabled { dns.hitGeometryReplayAt = elapsed }
         showToast(enabled ? "Hit plane overlay on" : "Hit plane overlay off",
                   tone: enabled ? .signal : .gold)
     }
@@ -3635,7 +2741,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
     func setAutoTour(_ enabled: Bool) {
         guard enabled != autoTour else { return }
         if enabled {
-            guard let destination = previewDestination() else {
+            guard let destination = dns.previewDestination() else {
                 showToast("Select a destination first.", tone: .gold)
                 return
             }
@@ -3681,16 +2787,17 @@ final class AtlasRuntime: NSObject, ObservableObject {
     }
 
     private func fireStudy(at destination: Destination) {
-        guard let node = nodeByDest[destination.id], !node.destroyed else { return }
+        guard let node = dns.nodeByDest[destination.id], !node.destroyed else { return }
         let busiestEdge = destination.edges.max { $0.liveQueries < $1.liveQueries }
-        let wire = busiestEdge.flatMap { wireByKey["\($0.deviceId)::\($0.destinationId)"] }
+        let wire = busiestEdge.flatMap { dns.wireByKey["\($0.deviceId)::\($0.destinationId)"] }
         let normal = (wire?.tangent ?? node.basePosition).normalized
-        registerImpact(node: node, normal: normal, event: nil)
+        dns.registerImpact(node: node, normal: normal, event: nil)
     }
 
     func setRecoil(_ enabled: Bool) {
         recoilEnabled = enabled
         AtlasPreferences.recoil = enabled
+        hostScene.setRecoilEnabled(enabled)
         if !enabled { nodes.forEach { $0.stopRecoil() } }
     }
 
@@ -3716,440 +2823,14 @@ final class AtlasRuntime: NSObject, ObservableObject {
         refreshUI()
     }
 
+
     func flashDestinationLabel(_ id: String, duration: Double) {
-        eventLabels[id] = Date().timeIntervalSince1970 + duration
-        if labelMode == .events { updateLabels(force: true) }
+        dns.flashDestinationLabel(id, duration: duration)
     }
 
-    private func expireEventLabels() {
-        guard !eventLabels.isEmpty else { return }
-        let now = Date().timeIntervalSince1970
-        var changed = false
-        for (id, until) in eventLabels where until <= now {
-            eventLabels.removeValue(forKey: id)
-            changed = true
-        }
-        if changed { updateLabels(force: true) }
-    }
 
     func previewMotion(_ kind: String) {
-        if autoTour { setAutoTour(false) }
-        if paused { setPaused(false) }
-        guard let destination = previewDestination(), let node = nodeByDest[destination.id] else {
-            showToast("Select a destination first.", tone: .gold)
-            return
-        }
-        switch kind {
-        case "impact":
-            let allowed = destination.status == .blocked
-                ? [Effects.meta(impact: "containment")]
-                : Effects.impacts.filter { $0.id != "containment" }
-            let meta = allowed[previewIndex.impact % allowed.count]
-            previewIndex.impact += 1
-            registerImpactPreview(node: node, meta: meta)
-            showToast("Impact preview · \(meta.key) \(meta.name)", tone: .gold)
-        case "birth":
-            let pool = destination.status == .blocked
-                ? [Effects.meta(birth: "redaction")]
-                : Effects.births.filter { $0.id != "redaction" }
-            let meta = pool[previewIndex.birth % pool.count]
-            previewIndex.birth += 1
-            birthDestination(destination, style: meta.id)
-            showToast("Emergence preview · \(meta.key) \(meta.name)", tone: .gold)
-        case "death":
-            let meta = Effects.deaths[previewIndex.death % Effects.deaths.count]
-            previewIndex.death += 1
-            retireDestination(destination, style: meta.id, restoreAfter: meta.duration + 1.25)
-            showToast("Erasure preview · \(meta.key) \(meta.name)", tone: .coral)
-        default: break
-        }
-    }
-
-    private func registerImpactPreview(node: NodeView, meta: EffectMeta) {
-        let destination = node.destinationRef!
-        // Preview the same geometry an arriving packet uses: the plane normal
-        // is the wire's arrival tangent, not the destination's radial normal.
-        // Falling back to the radial only keeps random/debug previews safe when
-        // no wire exists; it never replaces the real inbound vector.
-        let busiestEdge = destination.edges.max { $0.liveQueries < $1.liveQueries }
-        let previewWire = busiestEdge.flatMap {
-            wireByKey["\($0.deviceId)::\($0.destinationId)"]
-        }
-        let normal = (previewWire?.tangent ?? node.basePosition).normalized
-        node.onHit(normal, recoil: recoilEnabled && destination.status != .blocked)
-        let R = max(0.26, node.radius * 1.9)
-        var ctx = EffectContext(camera: camera, node: node, radius: R,
-                                point: node.basePosition, normal: normal,
-                                elapsed: elapsed, onShake: { [weak self] amount in
-                                    self?.trauma = min(1, (self?.trauma ?? 0) + amount * 0.55)
-                                }, rng: rng)
-        ctx.offset = .zero
-        let effect = Effects.impact(meta.id, ctx: ctx)
-        effects.add(effect, node: node, origin: node.basePosition, kind: "impact")
-        lastImpact = ImpactRecord(destinationId: destination.id, blocked: destination.status == .blocked,
-                                  at: elapsed, normal: normal, point: node.basePosition,
-                                  impactId: meta.id, impactName: "\(meta.key) · \(meta.name)")
-        hitGeometryReplayAt = nil
-        flashDestinationLabel(destination.id, duration: 1.7)
-    }
-
-    private func previewDestination() -> Destination? {
-        if let selection, let id = selection.destinationId { return network.destinationById[id] }
-        if let hover, let id = hover.destinationId { return network.destinationById[id] }
-        if let selection, let deviceId = selection.deviceId,
-           let device = network.deviceById[deviceId] {
-            return device.edges.sorted { $0.liveQueries > $1.liveQueries }.first?.destination
-        }
-        return network.destinations.sorted { $0.liveQueries > $1.liveQueries }.first
-    }
-
-    private func relatedForSelection() -> (devices: Set<String>, destinations: Set<String>, edges: Set<String>) {
-        var relatedDevices = Set<String>()
-        var relatedDestinations = Set<String>()
-        var relatedEdges = Set<String>()
-        guard let selection else { return (relatedDevices, relatedDestinations, relatedEdges) }
-        switch selection {
-        case .device(let id):
-            guard let device = network.deviceById[id] else { break }
-            relatedDevices.insert(device.id)
-            for edge in device.edges {
-                relatedEdges.insert(edge.id)
-                relatedDestinations.insert(edge.destinationId)
-            }
-        case .destination(let id):
-            guard let destination = network.destinationById[id] else { break }
-            relatedDestinations.insert(destination.id)
-            for edge in destination.edges {
-                relatedEdges.insert(edge.id)
-                relatedDevices.insert(edge.deviceId)
-            }
-        case .path(let deviceId, let destinationId):
-            relatedEdges.insert("\(deviceId)::\(destinationId)")
-            relatedDevices.insert(deviceId)
-            relatedDestinations.insert(destinationId)
-        }
-        return (relatedDevices, relatedDestinations, relatedEdges)
-    }
-
-    private func applyVisualState() {
-        let related = relatedForSelection()
-        let hasSelection = selection != nil
-        for node in nodes {
-            let destination = node.destinationRef!
-            let matchesFilter = filter == .all || destination.status == filter.status
-            let isRelated = !hasSelection || related.destinations.contains(destination.id)
-            node.setDimmed(!matchesFilter || !isRelated)
-            switch selection {
-            case .destination(let id): node.setSelected(id == destination.id)
-            case .path(_, let id): node.setSelected(id == destination.id)
-            default: node.setSelected(false)
-            }
-        }
-        for view in devices {
-            let isRelated = !hasSelection || related.devices.contains(view.deviceRef.id)
-            view.setDimmed(!isRelated)
-            switch selection {
-            case .device(let id): view.setSelected(id == view.deviceRef.id)
-            case .path(let id, _): view.setSelected(id == view.deviceRef.id)
-            default: view.setSelected(false)
-            }
-        }
-        for wire in wires {
-            let edge = wire.nodeView.destinationRef!
-            let matchesFilter = filter == .all || edge.status == filter.status
-            let isRelated = !hasSelection || related.edges.contains(wire.edgeId)
-            let isSelected = hasSelection && related.edges.contains(wire.edgeId)
-            var dim: Float = 1
-            if !matchesFilter { dim = 0.06 }
-            else if !isRelated { dim = 0.12 }
-            wire.setDim(dim)
-            var highlight: Float = isSelected ? 0.75 : 0
-            if !isSelected, let hover, let id = hover.deviceId, id == wire.deviceView.deviceRef.id {
-                highlight = 0.35
-            }
-            if let hoveredPath, hoveredPath.deviceId == wire.deviceView.deviceRef.id,
-               hoveredPath.destinationId == wire.nodeView.destinationRef.id {
-                highlight = 0.9
-            }
-            wire.setHighlight(highlight)
-        }
-        syncPathHalo()
-    }
-
-    private func syncPathHalo() {
-        var edge: Edge?
-        if let selection, case .path(let deviceId, let destinationId) = selection {
-            edge = network.edges.first { $0.deviceId == deviceId && $0.destinationId == destinationId }
-        } else if selection == nil, let hoveredPath {
-            edge = network.edges.first {
-                $0.deviceId == hoveredPath.deviceId && $0.destinationId == hoveredPath.destinationId
-            }
-        }
-        guard let edge, let wire = wireByEdge[edge.id], let curve = wire.curve,
-              let node = nodeByDest[edge.destinationId], !node.destroyed else {
-            pathHalo = nil
-            haloKey = nil
-            return
-        }
-        if filter != .all && edge.destination.status != filter.status {
-            pathHalo = nil
-            haloKey = nil
-            return
-        }
-        if haloKey == edge.id { return }
-        haloKey = edge.id
-        let blocked = edge.destination.status == .blocked
-        let color = blocked ? Palette.coral : Palette.gold
-        let tightColor = blocked ? SRGB(hex: "ffb6a3") : SRGB(hex: "fff1c9")
-        let sampled = (0...96).map { curve.pointAt(Float($0) / 96) }
-        let wideVerts = GeometryKit.tube(points: sampled, radius: 0.055, tubularSegments: 96, radialSegments: 6)
-            .map { TriangleVertex(position: SIMD4($0, 1), color: rgba(color, 0.09)) }
-        let tightVerts = GeometryKit.tube(points: sampled, radius: 0.016, tubularSegments: 96, radialSegments: 6)
-            .map { TriangleVertex(position: SIMD4($0, 1), color: rgba(tightColor, 0.72)) }
-        pathHalo = PathHalo(curve: curve, wide: wideVerts, tight: tightVerts, blocked: blocked)
-    }
-
-    private func updateHalo(_ dt: Float) {
-        _ = dt
-    }
-
-    private func updateLocalTraces(_ dt: Float) {
-        for i in localTraces.indices.reversed() {
-            localTraces[i].age += dt
-            if localTraces[i].age >= localTraces[i].duration { localTraces.remove(at: i) }
-        }
-        for i in ringTraces.indices.reversed() {
-            ringTraces[i].age += dt
-            if ringTraces[i].age >= ringTraces[i].duration { ringTraces.remove(at: i) }
-        }
-    }
-
-    // ── labels ───────────────────────────────────────────────────────────
-
-    private struct LabelEntry {
-        let el: AtlasLabel
-        let priority: Int
-        let order: Float
-    }
-
-    /// Upper bounds for the dense label modes. The demo never reaches them;
-    /// the live All field would otherwise measure text for every destination
-    /// and try to lay out hundreds of blurred tags in one SwiftUI pass.
-    private static let maxLabelCandidates = 64
-    private static let maxFieldLabels = 24
-
-    private func updateLabels(force: Bool) {
-        _ = force
-        guard dnsHasVisualData else {
-            labels.labels = []
-            return
-        }
-        var destSet = Set<String>()
-        var deviceSet = Set<String>()
-        if labelMode != .off {
-            if let selection {
-                switch selection {
-                case .destination(let id): destSet.insert(id)
-                case .device(let id): deviceSet.insert(id)
-                case .path(let d, let dest): destSet.insert(dest); deviceSet.insert(d)
-                }
-            }
-            if let hover {
-                switch hover {
-                case .destination(let id): destSet.insert(id)
-                case .device(let id): deviceSet.insert(id)
-                case .path(let d, let dest): destSet.insert(dest); deviceSet.insert(d)
-                }
-            }
-            if labelMode == .events {
-                let now = Date().timeIntervalSince1970
-                for (id, until) in eventLabels where until > now { destSet.insert(id) }
-            }
-            if labelMode == .all {
-                // Do not construct a label (or measure its text) for every orb
-                // in a live All graph. Resolve the busiest visible candidates
-                // only; the overlay then keeps the highest-priority visible
-                // set (24 normally, 4 above 200 destinations). On the demo
-                // this changes nothing (14 destinations).
-                let candidates = nodes.compactMap { node -> (NodeView, Destination)? in
-                    guard let destination = node.destinationRef, destination.windowVisible else { return nil }
-                    guard filter == .all || destination.status == filter.status else { return nil }
-                    return (node, destination)
-                }.sorted { $0.1.liveQueries > $1.1.liveQueries }
-                for (_, destination) in candidates.prefix(Self.maxLabelCandidates) {
-                    destSet.insert(destination.id)
-                }
-                for view in devices.prefix(Self.maxLabelCandidates) {
-                    deviceSet.insert(view.deviceRef.id)
-                }
-            }
-        }
-        for node in nodes {
-            node.setLabelVisible(destSet.contains(node.destinationRef.id))
-        }
-        for view in devices {
-            view.setLabelVisible(deviceSet.contains(view.deviceRef.id))
-        }
-        resolveLabels()
-    }
-
-    private func resolveLabels() {
-        let timingStart = AtlasDiagnostics.enabled ? CACurrentMediaTime() : 0
-        var entries: [LabelEntry] = []
-        let focusDistance = camera.position.length - globeRadius * 0.7
-        let labelScale = 1.6 * (0.35 + 0.65 * dofStrength)
-
-        for node in nodes {
-            let destination = node.destinationRef!
-            let visible = node.labelWanted && node.presence > 0.12 && !node.dimmed
-            if visible {
-                let screen = camera.project(node.labelPosition, viewport: SIMD2(Float(frameViewSize.width), Float(frameViewSize.height)))
-                let depth = camera.position.distance(to: node.basePosition)
-                let far = clamp((depth - focusDistance) / max(0.001, globeRadius * 1.35), 0, 1)
-                let blur = (node.selected || node.hovered) ? 0 : far * labelScale
-                let text = node.labelStatOverride ?? (destination.status == .blocked
-                    ? "\(Format.count(destination.liveBlocked)) blocked"
-                    : "\(Format.count(destination.liveQueries)) q")
-                let entry = destinationLabel(node: node, destination: destination,
-                                             screen: screen, blur: CGFloat(blur), latency: text)
-                var priority = 10
-                if node.labelWanted { priority = 40 + (destination.status == .blocked ? 6 : 0) }
-                if let selection, selection.destinationId == destination.id { priority = 120 }
-                if let hover, hover.destinationId == destination.id { priority = 130 }
-                entries.append(LabelEntry(el: entry, priority: priority, order: Float(destination.liveQueries)))
-            }
-        }
-        for view in devices {
-            let device = view.deviceRef!
-            if view.labelVisible {
-                let screen = camera.project(view.labelPosition, viewport: SIMD2(Float(frameViewSize.width), Float(frameViewSize.height)))
-                let entry = deviceLabel(view: view, device: device, screen: screen)
-                var priority = 5
-                if view.labelWanted { priority = 35 }
-                if device.thisMac { priority = 94 }
-                if let selection, selection.deviceId == device.id { priority = 118 }
-                if let hover, hover.deviceId == device.id { priority = 128 }
-                entries.append(LabelEntry(el: entry, priority: priority, order: source.getQps(device.id)))
-            }
-        }
-        entries.sort { $0.priority == $1.priority ? $0.order > $1.order : $0.priority > $1.priority }
-        var placed: [CGRect] = []
-        var labels: [AtlasLabel] = []
-        let fieldLimit = nodes.count > 200 ? 4 : Self.maxFieldLabels
-        for entry in entries {
-            let label = entry.el
-            guard label.anchor.x > -200, label.anchor.x < frameViewSize.width + 200,
-                  label.anchor.y > -200, label.anchor.y < frameViewSize.height + 200 else { continue }
-            let rect = labelRect(label)
-            var collides = false
-            for other in placed where rect.intersects(other) { collides = true; break }
-            if collides && entry.priority < 100 { continue }
-            if !collides { placed.append(rect.insetBy(dx: -4, dy: -3)) }
-            labels.append(label)
-            // `.all` on a live All graph can admit hundreds of tags. Rendering
-            // them all stalls SwiftUI, and they are unreadable anyway; keep the
-            // highest-priority visible set (selected/hover are sorted first).
-            if labels.count >= fieldLimit { break }
-        }
-        labelsStoreUpdate(labels)
-        if timingStart > 0 {
-            recordLabelTiming(CACurrentMediaTime() - timingStart)
-        }
-    }
-
-    private func recordLabelTiming(_ seconds: Double) {
-        labelTimingSum += seconds
-        labelTimingMax = max(labelTimingMax, seconds)
-        labelTimingCount += 1
-        guard labelTimingCount >= 120 else { return }
-        let avg = labelTimingSum / Double(labelTimingCount) * 1000
-        AtlasDiagnostics.log(String(format: "labels resolve count=%d avg=%.2fms max=%.2fms",
-                                    self.labels.labels.count, avg, labelTimingMax * 1000))
-        labelTimingSum = 0
-        labelTimingMax = 0
-        labelTimingCount = 0
-    }
-
-    private func labelsStoreUpdate(_ labels: [AtlasLabel]) {
-        // The resolver runs every frame now; only wake SwiftUI when the label
-        // set or an anchor actually moved (e.g. paused camera).
-        if self.labels.labels != labels {
-            self.labels.labels = labels
-        }
-    }
-
-    private func labelRect(_ label: AtlasLabel) -> CGRect {
-        CGRect(x: label.anchor.x - label.size.width / 2,
-               y: label.anchor.y - label.size.height - 8,
-               width: label.size.width, height: label.size.height)
-    }
-
-    private func destinationLabel(node: NodeView, destination: Destination,
-                                  screen: SIMD3<Float>, blur: CGFloat, latency: String) -> AtlasLabel {
-        let host = destinationDisplayName(destination)
-        let original = destinationOriginalText(destination)
-        let detail = original.map { "\($0) · \(latency)" } ?? latency
-        let cacheKey = "d:\(destination.id):\(host):\(detail):\(destination.status.rawValue)"
-        let size: CGSize
-        if let cached = labelSizeCache[cacheKey] {
-            size = cached
-        } else {
-            let hostFont = NSFont.monospacedSystemFont(ofSize: 8.2, weight: .regular)
-            let keyFont = NSFont.monospacedSystemFont(ofSize: 5.6, weight: .regular)
-            let subFont = NSFont.monospacedSystemFont(ofSize: 6.2, weight: .regular)
-            let hostWidth = ceil((host as NSString).size(withAttributes: [.font: hostFont]).width)
-            let keyWidth = max(16, ceil((destination.key as NSString).size(withAttributes: [.font: keyFont]).width) + 6)
-            let chipWidth: CGFloat = destination.status == .blocked ? 38 : 0
-            let tagWidth = 5 + keyWidth + 6 + hostWidth + (chipWidth > 0 ? 6 + chipWidth : 0) + 7
-            let metaWidth = ceil((destination.status.rawValue as NSString).size(withAttributes: [.font: subFont]).width)
-            let detailWidth = ceil((detail as NSString).size(withAttributes: [.font: subFont]).width)
-            let width = max(tagWidth, metaWidth + 6 + 2 + 6 + detailWidth)
-            size = CGSize(width: max(52, width), height: 40)
-            if labelSizeCache.count > 2048 { labelSizeCache.removeAll(keepingCapacity: true) }
-            labelSizeCache[cacheKey] = size
-        }
-        return AtlasLabel(
-            id: "dest-\(destination.id)", kind: .destination,
-            anchor: CGPoint(x: CGFloat(screen.x), y: CGFloat(screen.y)),
-            key: destination.key, host: host,
-            badge: destination.status == .blocked ? "blocked" : nil,
-            meta: destination.status.rawValue, detail: detail,
-            blocked: destination.status == .blocked,
-            hovered: node.hovered, selected: node.selected, blur: blur, size: size,
-            accessibilityLabel: "\(host), \(destination.domain), \(destination.status.rawValue), \(detail)"
-        )
-    }
-
-    private func deviceLabel(view: DeviceView, device: Device, screen: SIMD3<Float>) -> AtlasLabel {
-        let rate = Format.rate(source.getQps(device.id))
-        let host = deviceDisplayName(device)
-        let address = deviceAddressText(device)
-        let detail = "\(address) · \(rate)/s"
-        let cacheKey = "v:\(device.id):\(host):\(detail)"
-        let size: CGSize
-        if let cached = labelSizeCache[cacheKey] {
-            size = cached
-        } else {
-            let hostFont = NSFont.monospacedSystemFont(ofSize: 8.2, weight: .regular)
-            let subFont = NSFont.monospacedSystemFont(ofSize: 6.2, weight: .regular)
-            let hostWidth = ceil((host as NSString).size(withAttributes: [.font: hostFont]).width)
-            let tagWidth = 5 + 12 + 6 + hostWidth + (device.thisMac ? 6 + 35 : 0) + 7
-            let metaWidth = ceil(("source" as NSString).size(withAttributes: [.font: subFont]).width)
-            let detailWidth = ceil((detail as NSString).size(withAttributes: [.font: subFont]).width)
-            let width = max(tagWidth, metaWidth + 6 + 2 + 6 + detailWidth)
-            size = CGSize(width: max(56, width), height: 40)
-            if labelSizeCache.count > 2048 { labelSizeCache.removeAll(keepingCapacity: true) }
-            labelSizeCache[cacheKey] = size
-        }
-        return AtlasLabel(
-            id: "dev-\(device.id)", kind: .device,
-            anchor: CGPoint(x: CGFloat(screen.x), y: CGFloat(screen.y)),
-            key: "", host: host,
-            badge: device.thisMac ? "this mac" : nil,
-            meta: "source", detail: detail,
-            blocked: false, hovered: view.hovered, selected: view.selected, blur: 0, size: size,
-            accessibilityLabel: "\(host), \(device.kind), \(device.name), \(detail)"
-        )
+        dns.previewMotion(kind)
     }
 
     // ── aliases ──────────────────────────────────────────────────────────
@@ -4231,84 +2912,111 @@ final class AtlasRuntime: NSObject, ObservableObject {
         aliasesDidChange()
     }
 
+    func hostAppAlias(_ app: HostAppStat) -> String? {
+        hostAppAliases[aliasKey(app.id)]
+    }
+
+    func hostAppDisplayName(_ app: HostAppStat) -> String {
+        hostAppAlias(app) ?? app.name
+    }
+
+    func hostAppDisplayName(appID: String) -> String {
+        guard let app = hostSnapshot.apps.first(where: { $0.id == appID }) else {
+            return hostAppAliases[aliasKey(appID)] ?? "App"
+        }
+        return hostAppDisplayName(app)
+    }
+
+    func hostDestinationAlias(_ domain: HostDomainStat) -> String? {
+        hostDestinationAliases[aliasKey(domain.name)]
+    }
+
+    func hostDestinationAlias(name: String) -> String? {
+        hostDestinationAliases[aliasKey(name)]
+    }
+
+    func hostDestinationDisplayName(_ domain: HostDomainStat) -> String {
+        hostDestinationAlias(domain) ?? domain.name
+    }
+
+    func hostDestinationDisplayName(name: String) -> String {
+        hostDestinationAlias(name: name) ?? name
+    }
+
+    /// Original domain or IP:port beside a host alias, following the same
+    /// show-both preference as DNS destinations.
+    func hostDestinationOriginalText(_ domain: HostDomainStat) -> String? {
+        guard hostDestinationAlias(domain) != nil, showAliasWithAddress else { return nil }
+        return domain.name
+    }
+
+    func hostEndpointDisplayName(_ endpoint: HostEndpointStat) -> String {
+        let raw = endpoint.domain ?? "\(endpoint.remoteHost):\(endpoint.remotePort)"
+        return hostDestinationAliases[aliasKey(raw)] ?? endpoint.displayName
+    }
+
+    func setHostAppAlias(_ raw: String, for app: HostAppStat) {
+        var next = hostAppAliases
+        let key = aliasKey(app.id)
+        if let value = normalizedAlias(raw) {
+            next[key] = value
+        } else {
+            next.removeValue(forKey: key)
+        }
+        guard next != hostAppAliases else { return }
+        hostAppAliases = next
+        AtlasPreferences.hostAppAliases = next
+        hostAliasesDidChange()
+    }
+
+    func setHostDestinationAlias(_ raw: String, for domain: HostDomainStat) {
+        var next = hostDestinationAliases
+        let key = aliasKey(domain.name)
+        if let value = normalizedAlias(raw) {
+            next[key] = value
+        } else {
+            next.removeValue(forKey: key)
+        }
+        guard next != hostDestinationAliases else { return }
+        hostDestinationAliases = next
+        AtlasPreferences.hostDestinationAliases = next
+        hostAliasesDidChange()
+    }
+
+    private func hostAliasesDidChange() {
+        hostScene.setHostAliases(apps: hostAppAliases,
+                                 destinations: hostDestinationAliases,
+                                 showBoth: showAliasWithAddress)
+    }
+
     func setShowAliasWithAddress(_ enabled: Bool) {
         guard showAliasWithAddress != enabled else { return }
         showAliasWithAddress = enabled
         AtlasPreferences.showAliasWithAddress = enabled
+        hostScene.setHostAliases(apps: hostAppAliases,
+                                 destinations: hostDestinationAliases,
+                                 showBoth: enabled)
         aliasesDidChange()
     }
 
     private func aliasesDidChange() {
-        labelSizeCache.removeAll(keepingCapacity: true)
+        dns.invalidateLabelSizes()
         updateLabels(force: true)
         if rightRailOpen { refreshFeed() }
     }
 
+
     // ── picking ──────────────────────────────────────────────────────────
 
     func pick(at point: CGPoint, viewSize: CGSize) -> Selection? {
-        guard viewSize.width > 0, viewSize.height > 0 else { return nil }
-        let ndc = SIMD2<Float>(Float(point.x / viewSize.width) * 2 - 1,
-                               -(Float(point.y / viewSize.height) * 2 - 1))
-        let ray = camera.rayDirection(ndc: ndc)
-        var candidates: [(selection: Selection, center: Vec3, distance: Float)] = []
-        for node in nodes where node.canPick() {
-            let center = node.basePosition
-            let radius = node.radius * 2.1
-            if let t = raySphere(origin: camera.position, direction: ray, center: center, radius: radius) {
-                candidates.append((.destination(node.destinationRef.id), center, t))
-            }
-        }
-        for view in devices where view.canPick() {
-            let center = view.visualCenter
-            if let t = raySphere(origin: camera.position, direction: ray, center: center, radius: 0.9) {
-                candidates.append((.device(view.deviceRef.id), center, t))
-            }
-        }
-        guard !candidates.isEmpty else { return nil }
-
-        // Hit volumes deliberately overreach the drawn bodies so small orbs
-        // stay easy to catch, which makes ray order a poor tie-breaker: a
-        // foreground body can swallow a click aimed at a background one. Rank
-        // by screen distance to each projected centre instead, and use ray
-        // distance only for near-exact ties. This is what makes an out-of-
-        // focus device on the far shell directly addressable.
-        let viewport = SIMD2<Float>(Float(viewSize.width), Float(viewSize.height))
-        var best: (selection: Selection, screenDistance: Float, distance: Float)?
-        for candidate in candidates {
-            let projected = camera.project(candidate.center, viewport: viewport)
-            let dx = projected.x - Float(point.x)
-            let dy = projected.y - Float(point.y)
-            let screenDistance = (dx * dx + dy * dy).squareRoot()
-            if best == nil
-                || screenDistance < best!.screenDistance - 1.5
-                || (abs(screenDistance - best!.screenDistance) <= 1.5
-                    && candidate.distance < best!.distance) {
-                best = (candidate.selection, screenDistance, candidate.distance)
-            }
-        }
-        return best?.selection
-    }
-
-    private func raySphere(origin: Vec3, direction: Vec3, center: Vec3, radius: Float) -> Float? {
-        let oc = origin - center
-        let b = oc.dot(direction)
-        let c = oc.dot(oc) - radius * radius
-        let disc = b * b - c
-        guard disc > 0 else { return nil }
-        let sqrtD = sqrt(disc)
-        let t1 = -b - sqrtD
-        let t2 = -b + sqrtD
-        if t1 > 0.001 { return t1 }
-        if t2 > 0.001 { return t2 }
-        return nil
+        dns.pick(at: point, viewSize: viewSize)
     }
 
     // ── camera controls ──────────────────────────────────────────────────
 
     func computeFitDistance(width: CGFloat, height: CGFloat) -> Float {
         AtlasRuntime.computeFitDistance(width: width, height: height,
-                                        globeRadius: max(globeRadius, targetGlobeRadius()))
+                                        globeRadius: max(dns.globeRadius, dns.targetGlobeRadius()))
     }
 
     static func computeFitDistance(width: CGFloat, height: CGFloat,
@@ -4328,7 +3036,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
     }
 
     private var minOrbitRadius: Float {
-        max(11.5, globeRadius * 1.12)
+        max(11.5, dns.globeRadius * 1.12)
     }
 
     private var maxOrbitRadius: Float {
@@ -4338,13 +3046,13 @@ final class AtlasRuntime: NSObject, ObservableObject {
     /// Keep the projection and the orbit clamp in step with the computed
     /// globe size. A 13-unit test globe and a 1000-orb live globe need very
     /// different far planes and zoom-out bounds.
-    private func updateCameraLimits() {
+    func updateCameraLimits() {
         let maxRadius = maxOrbitRadius
-        let far = max(220, maxRadius * 2.2 + globeRadius * 3)
+        let far = max(220, maxRadius * 2.2 + dns.globeRadius * 3)
         if abs(camera.far - far) > 0.5 { camera.far = far }
     }
 
-    private func applyFraming() {
+    func applyFraming() {
         guard cameraFlight == nil else { return }
         fitDistance = currentFitDistance()
         let direction = (camera.position - orbitTarget).normalized
@@ -4352,7 +3060,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
         camera.target = orbitTarget
         camera.pan = clampedPan(camera.pan)
         camera.aspect = Float(frameViewSize.width / max(1, frameViewSize.height))
-        lastFramingTarget = targetGlobeRadius()
+        lastFramingTarget = dns.targetGlobeRadius()
         updateCameraLimits()
     }
 
@@ -4443,7 +3151,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
     /// The lab's Face hit: put the camera on the last inbound axis so the
     /// perpendicular blast plane reads as a circle instead of an ellipse.
     func faceHitCamera() {
-        guard let record = lastImpact, let node = nodeByDest[record.destinationId] else {
+        guard let record = dns.lastImpact, let node = dns.nodeByDest[record.destinationId] else {
             showToast("Fire once to establish a hit plane", tone: .gold)
             return
         }
@@ -4520,23 +3228,23 @@ final class AtlasRuntime: NSObject, ObservableObject {
         var position: Vec3?
         switch selection {
         case .device(let id):
-            guard let view = deviceById[id] else { return }
+            guard let view = dns.deviceById[id] else { return }
             guard view.deviceRef.windowVisible else {
                 showToast("Outside the history window", tone: .signal)
                 return
             }
             position = view.normal * (fit * 0.84) + Vec3(0, 0.8, 0)
         case .destination(let id):
-            guard let node = nodeByDest[id] else { return }
+            guard let node = dns.nodeByDest[id] else { return }
             guard node.destinationRef.windowVisible else {
                 showToast("Outside the history window", tone: .signal)
                 return
             }
             position = node.basePosition.normalized * (fit * 0.68)
         case .path(let id, let destinationId):
-            guard let view = deviceById[id] else { return }
+            guard let view = dns.deviceById[id] else { return }
             guard view.deviceRef.windowVisible,
-                  nodeByDest[destinationId]?.destinationRef.windowVisible == true else {
+                  dns.nodeByDest[destinationId]?.destinationRef.windowVisible == true else {
                 showToast("Outside the history window", tone: .signal)
                 return
             }
@@ -4628,32 +3336,13 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     // ── UI refresh ───────────────────────────────────────────────────────
 
-    private func refreshUI() {
-        if isReplay && replayCursor != replayLastPublished {
-            replayLastPublished = replayCursor
-            replayTime = replayCursor
-        }
+    func refreshUI() {
+        replay.syncPublishedTime()
         let nextTotals = network.totals
         if nextTotals != totals { totals = nextTotals }
         let nextWindowStats = network.windowStats()
         if nextWindowStats != windowStats { windowStats = nextWindowStats }
-        let nextQps: Float
-        if isReplay, let archive = replayArchive, archive.bucketSeconds > 0 {
-            let fraction = (replayTime - archive.start) / archive.duration
-            let index = min(archive.buckets.count - 1,
-                            max(0, Int(fraction * Double(archive.buckets.count))))
-            // A single bucket can legitimately be empty between bursts. A
-            // short rolling window keeps the inspector readable while still
-            // describing the archive rather than the live stream.
-            let low = max(0, index - 2)
-            let high = min(archive.buckets.count - 1, index + 2)
-            var total = 0
-            for i in low...high { total += archive.buckets[i].total }
-            let span = archive.bucketSeconds * Double(high - low + 1)
-            nextQps = span > 0 ? Float(total) / Float(span) : 0
-        } else {
-            nextQps = source.getQps()
-        }
+        let nextQps = replay.currentQps() ?? source.getQps()
         if abs(nextQps - qps) > 0.01 { qps = nextQps }
         let nextClock = isReplay ? Format.clock(replayTime) : Format.clock()
         if nextClock != clock { clock = nextClock }
@@ -4678,8 +3367,8 @@ final class AtlasRuntime: NSObject, ObservableObject {
         buildPulseIfNeeded()
         publishPulse()
         if rightRailOpen { refreshFeed() }
-        if let record = lastImpact,
-           let node = nodeByDest[record.destinationId] {
+        if let record = dns.lastImpact,
+           let node = dns.nodeByDest[record.destinationId] {
             let telemetry = StudyTelemetry(
                 host: destinationDisplayName(node.destinationRef),
                 inbound: record.normal,
@@ -4698,7 +3387,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
 
     private func refreshFeed() {
         var rows: [FeedRow] = []
-        let events = isReplay ? replayRecent : source.recent
+        let events = isReplay ? replay.recent : source.recent
         for event in events {
             guard event.destination.windowVisible else { continue }
             if filter != .all && event.status != filter.status { continue }
@@ -4747,7 +3436,7 @@ final class AtlasRuntime: NSObject, ObservableObject {
     // ── inspector data ──────────────────────────────────────────────────
 
     func recentEvents(deviceId: String? = nil, destinationId: String? = nil) -> [QueryEvent] {
-        (isReplay ? replayRecent : source.recent).filter { event in
+        (isReplay ? replay.recent : source.recent).filter { event in
             event.destination.windowVisible &&
             (deviceId == nil || event.deviceId == deviceId) &&
             (destinationId == nil || event.destinationId == destinationId)

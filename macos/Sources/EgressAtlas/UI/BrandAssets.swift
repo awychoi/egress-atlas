@@ -25,6 +25,15 @@ enum BrandAssets {
     /// direct `swift run` / bare executable has no bundle icon and falls back to
     /// the generic `exec` tile. Setting `NSApplication.applicationIconImage`
     /// explicitly makes every launch path use the official artwork.
+    /// A template copy keeps the supplied wordmark's vector detail while
+    /// letting the HOST lockup tint it with the cold text token.
+    static func templateImage(_ name: String) -> NSImage? {
+        guard let source = image(name) else { return nil }
+        let copy = source.copy() as? NSImage ?? source
+        copy.isTemplate = true
+        return copy
+    }
+
     static func appIcon() -> NSImage? {
         if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
            let icon = NSImage(contentsOf: url) {
@@ -45,9 +54,13 @@ enum BrandAssets {
 /// Kept as vector artwork so it stays crisp at every window size.
 struct BrandLockup: View {
     var height: CGFloat = 50
+    var host: Bool = false
+
     var body: some View {
         Group {
-            if let image = BrandAssets.image("brand-workbench") {
+            if host {
+                HostBrandLockup(height: height)
+            } else if let image = BrandAssets.image("brand-workbench") {
                 Image(nsImage: image)
                     .resizable()
                     .interpolation(.high)
@@ -63,15 +76,94 @@ struct BrandLockup: View {
             }
         }
         .frame(height: height)
-        .accessibilityLabel("Egress Atlas. DNS traffic, mapped.")
+        .accessibilityLabel(host ? "Egress Atlas. Live sockets, mapped."
+                                 : "Egress Atlas. DNS traffic, mapped.")
+    }
+}
+
+/// HOST mode needs the same lockup geometry in the cool climate: a cold app
+/// tile, the supplied wordmark, and a HOST-specific tagline. The warm artwork
+/// is never recoloured in place, so DNS focus is untouched.
+private struct HostBrandLockup: View {
+    var height: CGFloat
+
+    var body: some View {
+        HStack(spacing: height * 0.19) {
+            HostBrandTile(side: height)
+            VStack(alignment: .leading, spacing: height * 0.035) {
+                if let image = BrandAssets.templateImage("brand-wordmark") {
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.high)
+                        .renderingMode(.template)
+                        .scaledToFit()
+                        .foregroundColor(Palette.hostText.color)
+                        .frame(height: height * 0.325)
+                } else {
+                    Text("EGRESS ATLAS")
+                        .font(.system(size: height * 0.40, weight: .bold))
+                        .foregroundColor(Palette.hostText.color)
+                }
+                let taglineSize = max(6.0, height * 0.13)
+                Text("LIVE SOCKETS, MAPPED")
+                    .font(.system(size: taglineSize, weight: .regular, design: .monospaced))
+                    .tracking(taglineSize * 0.15)
+                    .foregroundColor(Palette.host.color)
+                    .padding(.leading, height * 0.10)
+                    .lineLimit(1)
+            }
+            .overlay(alignment: .topLeading) {
+                // Same short rule that sits above the DNS wordmark.
+                Rectangle()
+                    .fill(Palette.host.color)
+                    .frame(width: height * 0.62, height: max(1, height * 0.03))
+                    .offset(y: -height * 0.09)
+            }
+            .offset(y: height * 0.06)
+        }
+        .frame(height: height)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct HostBrandTile: View {
+    var side: CGFloat
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: side * 0.22, style: .continuous)
+                .fill(LinearGradient(
+                    stops: [
+                        .init(color: Palette.hostPanelTop.opacity(0.98), location: 0),
+                        .init(color: Palette.hostBg.color, location: 0.72),
+                        .init(color: SRGB(hex: "040a0d").color, location: 1),
+                    ],
+                    startPoint: .topLeading, endPoint: .bottomTrailing))
+            RadialGradient(colors: [Palette.host.opacity(0.20), .clear],
+                           center: UnitPoint(x: 0.5, y: 0.46),
+                           startRadius: 0, endRadius: side * 0.55)
+            if let image = BrandAssets.image("brand-mark-host") {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .padding(side * 0.02)
+            }
+        }
+        .frame(width: side, height: side)
+        .clipShape(RoundedRectangle(cornerRadius: side * 0.22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: side * 0.22, style: .continuous)
+            .strokeBorder(Palette.hostText.opacity(0.18), lineWidth: 1))
+        .shadow(color: Palette.host.opacity(0.16), radius: side * 0.18)
     }
 }
 
 struct BrandMark: View {
     var side: CGFloat = 37
+    var host: Bool = false
     var body: some View {
         Group {
-            if let image = BrandAssets.image("brand-mark") {
+            if let image = BrandAssets.image(host ? "brand-mark-host" : "brand-mark") {
                 Image(nsImage: image)
                     .resizable()
                     .interpolation(.high)

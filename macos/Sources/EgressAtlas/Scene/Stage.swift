@@ -57,9 +57,8 @@ struct GlobeTheme {
     )
 }
 
-/// Port of app/src/lab/GlobeStage.js: the hollow instrument sphere. Every
-/// element is the same primitive (lines, additive points, shader shells) with
-/// the same constants and texture-free color recipes.
+/// The hollow instrument sphere. Every element is built from lines, additive
+/// points and shader shells with texture-free colour recipes.
 final class GlobeStage {
     let radius: Float = 6
     let theme: GlobeTheme
@@ -271,7 +270,7 @@ final class GlobeStage {
             }
         }
 
-        // Atmosphere shells and glass. The web scales its stage root by R/6;
+        // Atmosphere shells and glass. The stage root scales by R/6;
         // our geometry is generated at radius 6, so the globes use R directly.
         let scale = stageScale * radius
         let shells: [AtmoUniforms]

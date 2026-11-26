@@ -4,7 +4,7 @@ import Foundation
 /// live monitor is attached. It exercises every confidence level and both
 /// directions so the host globe and chrome can be reviewed without the network.
 enum HostDemo {
-    static func snapshot() -> HostSnapshot {
+    static func snapshot(includeLocal: Bool = false) -> HostSnapshot {
         let now = Date()
         let apps: [(String, String, Bool)] = [
             ("app:com.brave.Browser", "Brave Browser", false),
@@ -25,7 +25,10 @@ enum HostDemo {
             ("104.18.21.219:443", "HTTPS", .none, 52_000, 3_000),
             ("time.apple.com", "NTP", .ptr, 4_000, 2_000),
             ("17.57.147.6:5223", "APNs", .none, 38_000, 6_000),
-        ]
+        ] + (includeLocal ? [
+            ("localhost:8765", "Loopback", .none, 180_000, 26_000),
+            ("127.0.0.1:8888", "Local", .none, 92_000, 14_000),
+        ] : [])
         var appStats: [HostAppStat] = []
         var endpoints: [HostEndpointStat] = []
         var domainStats: [HostDomainStat] = []
@@ -76,7 +79,7 @@ enum HostDemo {
             rxPerSecond: totalRx, txPerSecond: totalTx,
             sessionRx: UInt64(totalRx * 120), sessionTx: UInt64(totalTx * 120),
             available: true, note: nil,
-            enabledScopes: [.internet, .lan, .vpn]
+            enabledScopes: includeLocal ? [.internet, .lan, .vpn, .loopback] : [.internet, .lan, .vpn]
         )
     }
 
@@ -90,14 +93,19 @@ enum HostDemo {
     ) -> HostEndpointStat {
         let rx = domain.3 * scale
         let tx = domain.4 * scale
+        let target = domain.0.contains(":")
+            ? domain.0.components(separatedBy: ":")
+            : ["104.18.\(index).\(dIndex)"]
+        let remoteHost = target.first ?? domain.0
+        let remotePort = Int(target.last ?? "") ?? 443
         return HostEndpointStat(
-            id: "\(appID)|tcp4|\(domain.0)|443",
+            id: "\(appID)|tcp4|\(domain.0)|\(remotePort)",
             appID: appID,
-            remoteHost: domain.0.contains(":") ? domain.0.components(separatedBy: ":").first ?? domain.0 : "104.18.\(index).\(dIndex)",
-            remotePort: 443,
+            remoteHost: remoteHost,
+            remotePort: remotePort,
             proto: "tcp4",
             service: domain.1,
-            scope: .internet,
+            scope: HostScope.classify(remoteHost),
             domain: domain.0.contains(":") ? nil : domain.0,
             confidence: domain.2,
             rxPerSecond: rx,
@@ -118,7 +126,7 @@ enum HostDemo {
     ) -> HostDomainStat {
         return HostDomainStat(
             id: "d:\(domain.0)", name: domain.0, isDomain: !domain.0.contains(":"),
-            scope: .internet, confidence: domain.2, service: domain.1,
+            scope: endpoint.scope, confidence: domain.2, service: domain.1,
             rxPerSecond: (existing?.rxPerSecond ?? 0) + endpoint.rxPerSecond,
             txPerSecond: (existing?.txPerSecond ?? 0) + endpoint.txPerSecond,
             rxTotal: (existing?.rxTotal ?? 0) + endpoint.rxTotal,

@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// The web stylesheet's font families. Everything is authored in CSS px, which
+/// Font families for the native chrome. Sizes are authored in CSS px, which
 /// maps 1:1 to SwiftUI points at the standard macOS scale.
 enum AtlasFont {
     static func sans(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
@@ -34,7 +34,7 @@ extension View {
     }
 }
 
-/// Media-query-aware layout tokens from app/src/styles.css.
+/// Breakpoint-aware layout tokens for the chrome.
 struct Metrics: Equatable {
     let width: CGFloat
     let height: CGFloat

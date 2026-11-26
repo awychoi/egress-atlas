@@ -55,7 +55,7 @@ struct HostNetworkRail: View {
                         .padding(.vertical, 2)
                         .overlay(RoundedRectangle(cornerRadius: 3)
                             .strokeBorder(Palette.host.opacity(0.18), lineWidth: 1))
-                    RailCloseButton(action: { runtime.leftRailOpen = false }, left: true)
+                    RailCloseButton(action: { runtime.leftRailOpen = false }, left: true, host: true)
                 }
                 Text(tab == 0 ? "Apps" : "Domains")
                     .font(.atlasSans(metrics.railHeadTitleSize, .medium))
@@ -65,7 +65,7 @@ struct HostNetworkRail: View {
                 if metrics.showIndexCopy {
                     Text(tab == 0
                          ? "Processes moving bytes through this Mac. Select one to see its domains."
-                         : "Domains inferred from this Mac's Pi-hole queries. IP:port means no domain was resolved.")
+                         : "Domains are inferred from this Mac's Pi-hole queries and local resolution. IP:port means no name was resolved.")
                         .font(.atlasSans(10.5, .regular))
                         .tracking(-0.05)
                         .lineSpacing(2)
@@ -248,7 +248,7 @@ struct HostAppRow: View {
                 .frame(width: 22, height: 22)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
-                    Text(app.name)
+                    Text(runtime.hostAppDisplayName(app))
                         .font(.atlasSans(12, .medium))
                         .tracking(-0.15)
                         .foregroundColor(selected ? Palette.hostText.color : Palette.hostText2.color)
@@ -296,8 +296,8 @@ struct HostAppRow: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
-        .accessibilityLabel("\(app.name), \(Format.dataRate(app.rxPerSecond)) in, \(Format.dataRate(app.txPerSecond)) out")
-        .help("\(app.name) · \(app.detail)")
+        .accessibilityLabel("\(runtime.hostAppDisplayName(app)), \(Format.dataRate(app.rxPerSecond)) in, \(Format.dataRate(app.txPerSecond)) out")
+        .help("\(runtime.hostAppDisplayName(app)) · \(app.detail)")
     }
 }
 
@@ -323,18 +323,20 @@ struct HostDomainRow: View {
                     .foregroundColor(Palette.hostRemote.color)
             }
             .frame(width: 22, height: 22)
+            let local = domain.scope == .loopback
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
-                    Text(domain.name)
+                    Text(runtime.hostDestinationDisplayName(domain))
                         .font(.atlasSans(12, .medium))
                         .tracking(-0.15)
                         .foregroundColor(selected ? Palette.hostText.color : Palette.hostText2.color)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    if domain.confidence != .none || !domain.isDomain {
-                        let confidenceTone = (domain.confidence == .none || domain.confidence == .service)
-                            ? Palette.hostMuted : Palette.hostRemote
-                        Text(domain.confidence.label.uppercased())
+                    if local || domain.confidence != .none || !domain.isDomain {
+                        let confidenceTone = local ? Palette.hostMint
+                            : ((domain.confidence == .none || domain.confidence == .service)
+                               ? Palette.hostMuted : Palette.hostRemote)
+                        Text(local ? "LOCAL" : domain.confidence.label.uppercased())
                             .font(.atlasMono(5.4, .regular))
                             .tracking(0.4)
                             .foregroundColor(confidenceTone.color)
@@ -344,7 +346,8 @@ struct HostDomainRow: View {
                                 .strokeBorder(confidenceTone.opacity(0.32), lineWidth: 1))
                     }
                 }
-                Text("\(domain.service) · \(domain.appIDs.count) app\(domain.appIDs.count == 1 ? "" : "s")\(domain.isDomain ? "" : " · no DNS")")
+                let original = runtime.hostDestinationOriginalText(domain)
+                Text("\(domain.service) · \(domain.appIDs.count) app\(domain.appIDs.count == 1 ? "" : "s")\(domain.isDomain ? "" : " · no DNS")\(original.map { " · \($0)" } ?? "")")
                     .font(.atlasMono(6.7, .regular))
                     .foregroundColor(Palette.hostMeta.color)
                     .lineLimit(1)
@@ -354,10 +357,11 @@ struct HostDomainRow: View {
                 HostRailRateStats(rx: domain.rxPerSecond, tx: domain.txPerSecond,
                                   total: domain.totalPerSecond, maxRate: maxRate,
                                   tone: Palette.hostRemote)
-                Text(domain.confidence.label.uppercased())
+                Text(local ? "LOCAL" : domain.confidence.label.uppercased())
                     .font(.atlasMono(6.2, .regular))
-                    .foregroundColor((domain.confidence == .none || domain.confidence == .service)
-                                     ? Palette.hostFaint.color : Palette.hostRemote.opacity(0.8))
+                    .foregroundColor(local ? Palette.hostMint.color
+                                     : ((domain.confidence == .none || domain.confidence == .service)
+                                        ? Palette.hostFaint.color : Palette.hostRemote.opacity(0.8)))
             }
         }
         .padding(.leading, 8)
@@ -376,7 +380,7 @@ struct HostDomainRow: View {
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
-        .accessibilityLabel("\(domain.name), \(domain.confidence.label), \(Format.dataRate(domain.rxPerSecond)) in")
+        .accessibilityLabel("\(runtime.hostDestinationDisplayName(domain)), \(domain.confidence.label), \(Format.dataRate(domain.rxPerSecond)) in")
     }
 }
 

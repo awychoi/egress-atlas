@@ -101,13 +101,10 @@ final class GlobeMTKView: MTKView {
         moveObservers = [willMove, didMove]
         sceneVisible = window.occlusionState.contains(.visible)
 
-        // Drive the field from a clock that is synchronised to the display.
-        // The old loop paired a main-queue `asyncAfter` chain with a
-        // per-frame `needsDisplay`/`isPaused` toggle; that produced only
-        // ~22–24 presented frames/s even though the renderer itself used
-        // 0.8 ms CPU and 1.6 ms GPU. The display link fires with the display's
-        // refresh and the single `draw()` path below is the only one that
-        // presents. See FrameClockMode for the measurement fallbacks.
+        // Drive the field from a clock synchronised to the display. The
+        // display link fires with the display refresh, and the single
+        // `draw()` path below is the only one that presents. See
+        // FrameClockMode for the measurement fallbacks.
         frameGeneration += 1
         startClock()
     }
@@ -224,10 +221,9 @@ final class GlobeMTKView: MTKView {
             && bounds.width > 1 && bounds.height > 1
         guard canDraw else { return }
         let workStart = CACurrentMediaTime()
-        // A manual draw is the only path that may run. The old loop also set
-        // `needsDisplay` and toggled `isPaused` around this call, which made
-        // AppKit schedule a second, redundant display pass; even with a
-        // display link firing at 72 Hz, only ~24 frames/s reached the screen.
+        // A manual draw is the only path that may run. Setting
+        // `needsDisplay` or toggling `isPaused` here would let AppKit
+        // schedule a second, redundant display pass.
         draw()
         framesDrawn += 1
         recordPacing(work: CACurrentMediaTime() - workStart)

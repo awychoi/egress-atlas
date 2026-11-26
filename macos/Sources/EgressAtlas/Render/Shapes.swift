@@ -7,8 +7,8 @@ struct ShapeMesh {
     let count: Int
 }
 
-/// Geometry transcribed from the Three.js primitives used by the web scene.
-/// Mesh shapes are unit-sized; the caller supplies the model matrix.
+/// Geometry for the scene's mesh primitives. Shapes are unit-sized; the
+/// caller supplies the model matrix.
 final class ShapeLibrary {
     let device: MTLDevice
     private(set) var shapes: [ShapeID: ShapeMesh] = [:]
@@ -59,10 +59,9 @@ enum GeometryKit {
         return out
     }
 
-    /// Three.js/WebGL treats counter-clockwise as front; Metal defaults to
-    /// clockwise. Build the sphere with clockwise outward faces so Metal's
-    /// `.back` culling keeps the visible front hemisphere and the outward
-    /// vertex normals light correctly.
+    /// Counter-clockwise winding is front-facing; Metal defaults to clockwise.
+    /// Build the sphere with clockwise outward faces so `.back` culling keeps
+    /// the visible front hemisphere and the outward normals light correctly.
     static func appendOutward(_ out: inout [ShapeVertex], _ a: Vec3, _ b: Vec3, _ c: Vec3,
                               _ na: Vec3, _ nb: Vec3, _ nc: Vec3,
                               _ ua: SIMD2<Float>, _ ub: SIMD2<Float>, _ uc: SIMD2<Float>) {
@@ -233,7 +232,7 @@ enum GeometryKit {
     }
 
     /// A tube along a point set, used for local flows and the selected path
-    /// halo (Three.TubeGeometry equivalent).
+    /// halo (tube around a curve).
     static func tube(points: [Vec3], radius: Float, tubularSegments: Int = 72, radialSegments: Int = 5) -> [Vec3] {
         guard points.count >= 2 else { return [] }
         let curve = CatmullRom(points: points, closed: false, curveType: "catmullrom", tension: 0.5)

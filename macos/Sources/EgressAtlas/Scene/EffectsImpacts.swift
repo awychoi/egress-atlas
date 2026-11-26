@@ -1,8 +1,7 @@
 import Foundation
 import simd
 
-/// Impact studies from app/src/lab/effects/impact/*.js. Formulas, counts,
-/// palettes and timings are kept 1:1.
+/// Impact studies: formulas, counts, palettes and timings for each style.
 
 final class EclipseEffect: EffectStudy {
     let duration: Float = 1.38

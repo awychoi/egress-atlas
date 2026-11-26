@@ -26,8 +26,8 @@ enum SignalStyle {
     }
 }
 
-/// Port of app/src/lab/Signal.js: a white-hot comet with a 34-point tapered
-/// trail that lives inside the moving signal group.
+/// A white-hot comet with a 34-point tapered trail that lives inside the
+/// moving signal group.
 final class Signal {
     let curve: CatmullRom
     let duration: Float

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ToastView: View {
     let toast: ToastMessage
+    var host: Bool = false
 
     private var color: Color {
         switch toast.tone {
@@ -28,7 +29,7 @@ struct ToastView: View {
             .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.rgba("120a06", 0.82))
+                    .fill(host ? Color.rgba("050d11", 0.88) : Color.rgba("120a06", 0.82))
             )
             .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(border, lineWidth: 1))
             .shadow(color: .black.opacity(0.3), radius: 12, x: 0, y: 8)
@@ -43,30 +44,34 @@ struct BootOverlay: View {
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                Color.rgba("060301", 1)
-                RadialGradient(colors: [Color.rgba("2a140c", 0.52), .clear],
+                let host = runtime.displayedGlobe == .host
+                Color.rgba(host ? "040a0d" : "060301", 1)
+                RadialGradient(colors: [Color.rgba(host ? "0c1b22" : "2a140c", host ? 0.72 : 0.52), .clear],
                                center: UnitPoint(x: 0.5, y: 0.48),
                                startRadius: 0, endRadius: min(geo.size.width, geo.size.height) * 0.7)
                 VStack(spacing: 14) {
-                    BrandLockup(height: 52)
+                    BrandLockup(height: 52, host: host)
                     VStack(spacing: 5) {
-                        Text("Calibrating egress field")
+                        Text(host ? "Reading this Mac's sockets" : "Calibrating egress field")
                             .font(.atlasSans(15, .medium))
                             .tracking(-0.14)
-                            .foregroundColor(Palette.text2.color)
+                            .foregroundColor(host ? Palette.hostText2.color : Palette.text2.color)
                     }
                     ZStack(alignment: .leading) {
-                        Rectangle().fill(Palette.text.opacity(0.07)).frame(width: 280, height: 1)
-                        LinearGradient(colors: [.clear, Palette.gold.color, .clear], startPoint: .leading, endPoint: .trailing)
+                        Rectangle().fill(host ? Palette.hostText.opacity(0.07) : Palette.text.opacity(0.07))
+                            .frame(width: 280, height: 1)
+                        LinearGradient(colors: [.clear, host ? Palette.host.color : Palette.gold.color, .clear],
+                                       startPoint: .leading, endPoint: .trailing)
                             .frame(width: 118, height: 1)
                             .offset(x: scan * 280)
                     }
                     .frame(width: 280, height: 1)
                     .clipped()
-                    Text("MAPPING \(runtime.network.devices.count) DEVICES TO THE SHELL · \(runtime.network.destinations.count) DESTINATIONS INSIDE")
+                    Text(host ? "THIS MAC · LIVE SOCKETS · NO HISTORY"
+                              : "MAPPING \(runtime.network.devices.count) DEVICES TO THE SHELL · \(runtime.network.destinations.count) DESTINATIONS INSIDE")
                         .font(.atlasMono(6.5, .regular))
                         .tracking(6.5 * 0.1)
-                        .foregroundColor(Palette.faint.color)
+                        .foregroundColor(host ? Palette.hostFaint.color : Palette.faint.color)
                 }
                 .frame(width: 280)
             }
@@ -131,7 +136,7 @@ struct AtlasChrome: View {
                 if let toast = runtime.toast {
                     VStack {
                         Spacer()
-                        ToastView(toast: toast)
+                        ToastView(toast: toast, host: runtime.displayedGlobe == .host)
                             .padding(.bottom, 178)
                             .transition(.opacity.combined(with: .offset(y: 6)))
                     }

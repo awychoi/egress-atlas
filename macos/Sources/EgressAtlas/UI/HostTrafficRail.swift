@@ -24,7 +24,7 @@ struct HostTrafficRail: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 8) {
-                    Eyebrow(text: "Host traffic", size: 8, color: Palette.host.color, trackingEm: 0.12)
+                    Eyebrow(text: "Transfers", size: 8, color: Palette.host.color, trackingEm: 0.12)
                     Spacer(minLength: 4)
                     HStack(spacing: 4) {
                         Circle().fill(runtime.hostPaused ? Palette.hostOut.color : Palette.hostMint.color)
@@ -35,15 +35,15 @@ struct HostTrafficRail: View {
                             .tracking(7 * 0.12)
                             .foregroundColor(runtime.hostPaused ? Palette.hostOut.color : Palette.hostMint.color)
                     }
-                    RailCloseButton(action: { runtime.rightRailOpen = false }, left: false)
+                    RailCloseButton(action: { runtime.rightRailOpen = false }, left: false, host: true)
                 }
-                Text("This Mac")
+                Text("Recent transfers")
                     .font(.atlasSans(metrics.railHeadTitleSize, .medium))
                     .tracking(-metrics.railHeadTitleSize * 0.032)
                     .foregroundColor(Palette.hostText.color)
                     .padding(.top, 8)
                 if metrics.showRailCopy {
-                    Text("Byte flow from this Mac's sockets. Apps are processes; domains are inferred from Pi-hole queries.")
+                    Text("Byte flow from this Mac's sockets, newest first. Apps are processes; domains are inferred from Pi-hole queries.")
                         .font(.atlasSans(10.5, .regular))
                         .lineSpacing(2)
                         .foregroundColor(Palette.hostMuted.color)
@@ -116,7 +116,7 @@ struct HostTrafficRail: View {
             }
             .frame(maxHeight: .infinity)
 
-            Text(!runtime.isLiveSource && runtime.hostSnapshot.domains.contains(where: \.isDomain)
+            Text(runtime.hostDemoActive
                  ? "DEMO HOST SAMPLE · NAMES ARE SYNTHETIC · THIS MAC ONLY"
                  : (runtime.hostDomainStatus == nil
                     ? (runtime.isLiveSource ? "DOMAIN NAMES INFERRED · THIS MAC ONLY"
@@ -155,11 +155,13 @@ struct HostFeedRow: View {
     let transfer: HostTransfer
 
     private var appName: String {
-        runtime.hostSnapshot.apps.first { $0.id == transfer.appID }?.name ?? "App"
+        runtime.hostAppDisplayName(appID: transfer.appID)
     }
     private var domainName: String {
-        runtime.hostSnapshot.domains.first { $0.id == transfer.domainID }?.name
-            ?? transfer.domain ?? "IP:port"
+        if let domain = runtime.hostSnapshot.domains.first(where: { $0.id == transfer.domainID }) {
+            return runtime.hostDestinationDisplayName(domain)
+        }
+        return runtime.hostDestinationDisplayName(name: transfer.domain ?? "IP:port")
     }
     private var inbound: Bool { transfer.bytesIn > transfer.bytesOut }
     private var domainStat: HostDomainStat? {
@@ -213,10 +215,12 @@ struct HostFeedRow: View {
                                 .foregroundColor(Palette.hostMeta.color)
                                 .lineLimit(1)
                         }
+                        let local = domainStat?.scope == .loopback
                         let confidence = domainStat?.confidence ?? .none
-                        let confidenceTone = (confidence == .none || confidence == .service)
-                            ? Palette.hostMuted : Palette.hostRemote
-                        Text(confidence.label.uppercased())
+                        let confidenceTone = local ? Palette.hostMint
+                            : ((confidence == .none || confidence == .service)
+                               ? Palette.hostMuted : Palette.hostRemote)
+                        Text(local ? "LOCAL" : confidence.label.uppercased())
                             .font(.atlasMono(5.6, .regular))
                             .tracking(0.3)
                             .foregroundColor(confidenceTone.color)

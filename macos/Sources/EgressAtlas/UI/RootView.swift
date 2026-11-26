@@ -26,7 +26,7 @@ struct RootView: View {
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
-            .background(Palette.deep.color)
+            .background(runtime.displayedGlobe == .host ? Palette.hostBg.color : Palette.deep.color)
             .onAppear {
                 runtime.start()
                 installKeyboard()
@@ -42,7 +42,7 @@ struct RootView: View {
             }
         }
         .ignoresSafeArea()
-        .background(Palette.deep.color)
+        .background(runtime.displayedGlobe == .host ? Palette.hostBg.color : Palette.deep.color)
         .preferredColorScheme(.dark)
     }
 
@@ -118,6 +118,7 @@ struct RootView: View {
                 runtime.resetCamera()
                 return nil
             case "l":
+                guard runtime.displayedGlobe == .dns else { return event }
                 if runtime.isReplay {
                     runtime.goLive()
                 } else {
@@ -131,9 +132,11 @@ struct RootView: View {
                                   tone: .signal)
                 return nil
             case "t":
+                guard runtime.displayedGlobe == .dns else { return event }
                 runtime.setAutoTour(!runtime.autoTour)
                 return nil
             case "h":
+                guard runtime.displayedGlobe == .dns else { return event }
                 runtime.faceHitCamera()
                 return nil
             case "+", "=":
@@ -143,12 +146,15 @@ struct RootView: View {
                 runtime.zoomBy(1.22)
                 return nil
             case "1":
+                guard runtime.displayedGlobe == .dns else { return event }
                 runtime.setSpeed(1)
                 return nil
             case "2":
+                guard runtime.displayedGlobe == .dns else { return event }
                 runtime.setSpeed(2)
                 return nil
             case "4":
+                guard runtime.displayedGlobe == .dns else { return event }
                 runtime.setSpeed(4)
                 return nil
             case "[":

@@ -12,10 +12,10 @@ struct NodeSpec {
     let tone: String
 }
 
-/// Port of app/src/lab/NodeView.js. A destination is a real orb with the
-/// camera-facing instrument ring, two orbiters, a world orbit line and a
-/// short-lived flash. The recoil offset moves the whole assembly, not the
-/// anchor, so wires and hit planes stay fixed.
+/// A destination is a real orb with the camera-facing instrument ring, two
+/// orbiters, a world orbit line and a short-lived flash. The recoil offset
+/// moves the whole assembly, not the anchor, so wires and hit planes stay
+/// fixed.
 final class NodeView {
     let spec: NodeSpec
     let id: String
@@ -25,12 +25,14 @@ final class NodeView {
     var basePosition: Vec3
 
     var presence: Float = 1
+    /// Host bodies shrink harder than DNS destinations on retirement. DNS keeps
+    /// the default 1 so its existing studies are untouched.
+    var presenceScale: Float = 1
     var hovered = false
     var selected = false
     var dimmed = false
     var labelWanted = true
     var phase: Float
-    var depthBlur: Float = 0
     var destroyed = false
     var labelStatOverride: String?
 
@@ -55,8 +57,15 @@ final class NodeView {
     private var orbitYaw: Float = 0
     private var lastFlashScale: Float = 0
     private var hoverState = HoverEase()
+    /// Host layout changes steer to a target instead of snapping. DNS calls
+    /// `setBasePosition` without `animated`, so its layout remains deterministic
+    /// and frame-identical.
+    private var positionTarget: Vec3?
+    var isMoving: Bool { positionTarget != nil }
+    var debugTargetPosition: Vec3? { positionTarget }
 
     private var tint: NodeTint.Tint {
+        if spec.tone == "hostLocal" { return NodeTint.hostLocal }
         if spec.tone == "hostDomain" { return NodeTint.hostDomain }
         if spec.tone == "host" { return NodeTint.host }
         return status == .blocked ? NodeTint.blocked : NodeTint.allowed
@@ -74,9 +83,14 @@ final class NodeView {
         self.status = spec.status
     }
 
-    func setBasePosition(_ position: Vec3) {
-        basePosition = position
-        destinationRef?.position = position
+    func setBasePosition(_ position: Vec3, animated: Bool = false) {
+        if animated {
+            positionTarget = position
+        } else {
+            positionTarget = nil
+            basePosition = position
+            destinationRef?.position = position
+        }
     }
 
     func setStatus(_ status: DNSStatus) {
@@ -143,6 +157,7 @@ final class NodeView {
     func canPick() -> Bool { !destroyed && presence > 0.25 }
 
     func update(dt: Float, elapsed: Float) {
+        updatePosition(dt)
         let hoverTarget: Float = (hovered || selected) ? 1 : 0
         hoverState.value += (hoverTarget - hoverState.value) * min(1, dt * 10)
         if flashAge < 1 {
@@ -163,17 +178,33 @@ final class NodeView {
         _ = elapsed
     }
 
+    /// Critically damped-looking exponential approach. Host layout changes
+    /// retarget the orb; it travels there over roughly a second instead of
+    /// blinking to its new slot. Wires read `basePosition` per frame while
+    /// this runs, so they travel with it.
+    private func updatePosition(_ dt: Float) {
+        guard let target = positionTarget else { return }
+        let k = 1 - exp(-min(dt, 0.1) * 6.5)
+        basePosition += (target - basePosition) * k
+        if basePosition.distanceSquared(to: target) < 0.000001 {
+            basePosition = target
+            positionTarget = nil
+        }
+        destinationRef?.position = basePosition
+    }
+
     private struct HoverEase { var value: Float = 0 }
 
     /// Append the destination's visual primitives. `camera` gives the billboard
     /// orientation and the camera-facing inner arc's plane.
-    func appendDraw(_ draw: DrawList, elapsed: Float, camera: Camera, detail: Float = 1) {
+    func appendDraw(_ draw: DrawList, elapsed: Float, camera: Camera,
+                    detail: Float = 1, depthFocus: Bool = true) {
         guard presence > 0.004 else { return }
         let tint = self.tint
         let dim = dimFactor
         let op = presence * tint.dim * dim
         let visualCenter = basePosition + recoilOffset
-        let visualScale = self.visualScale
+        let visualScale = self.visualScale * presenceScale
         let scale = presence > 0 ? visualScale : 0.86
         // Continuous LOD tiers: bokeh fades out as the body, ring, arc and
         // world orbit fade in. No binary low/high model swap.
@@ -182,12 +213,12 @@ final class NodeView {
         // until they are near the focal plane.
         let stagger = Float(index % 7) / 7 * 0.10
         let localDetail = clamp01((detail - stagger) / max(0.001, 1 - stagger))
-        // Divider through the globe centre, perpendicular to the camera.
-        // Only the far side of the divider defocuses; the near half stays
-        // sharp, and the divider stays put while the globe rotates.
+        // HOST still uses the local soft-depth tier; DNS passes depthFocus:
+        // false and relies entirely on the shared hemisphere dim pass.
         let focusDepth = camera.viewDepth(of: .zero)
         let depthDelta = camera.viewDepth(of: visualCenter) - focusDepth
-        let depthDefocus = depthDelta > 0 ? clamp01(depthDelta * 0.16) : 0
+        let depthDefocus = depthFocus && depthDelta > 0
+            ? clamp01(depthDelta * 0.16) : 0
         let blurAlpha = max(1 - smoothstep(0.45, 0.92, localDetail), depthDefocus * 0.85)
         // Keep a dim but legible structure in the defocused half: the orbit
         // lights and ring never disappear, they just lose most of their
@@ -314,6 +345,16 @@ final class NodeView {
                                   size: radius * 1.95,
                                   color: status == .blocked ? tint.hot : Palette.signalIce,
                                   opacity: orbitAlpha * (hovered || selected ? 0.95 : 0.58) * min(1, presence) * (dimmed ? 0.3 : 1)))
+        }
+
+        // Local destinations carry a quieter, continuous heartbeat so a
+        // loopback body reads as "this Mac" even between transfers.
+        if spec.tone == "hostLocal", orbAlpha > 0.01 {
+            let beat = 0.5 + 0.5 * sin(elapsed * 2.1 + phase)
+            draw.sprites.append(.glow(visualCenter,
+                                      size: radius * (2.4 + beat * 0.65) * scale * glowScale,
+                                      color: Palette.hostMint,
+                                      opacity: 0.12 * orbAlpha * presence * dim * (0.55 + beat * 0.45)))
         }
 
         // Hit flash.

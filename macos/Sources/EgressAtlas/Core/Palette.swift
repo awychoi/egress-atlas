@@ -2,9 +2,8 @@ import Foundation
 import SwiftUI
 import AppKit
 
-/// sRGB color with the same hex values as the web's CSS tokens and config.js.
-/// `linear` is what the MSL shaders see, mirroring Three's ColorManagement
-/// (hex is authored in sRGB and converted to linear working space).
+/// sRGB colour authored from hex tokens. `linear` is what the MSL shaders
+/// see; hex values are converted to the linear working space.
 struct SRGB: Hashable, Sendable {
     let r: Float
     let g: Float
@@ -56,7 +55,7 @@ struct SRGB: Hashable, Sendable {
     }
 }
 
-/// app/src/lab/config.js COLORS.
+/// Colour tokens for the scene and chrome.
 enum Palette {
     static let deep = SRGB(hex: "080402")
     static let bgDeep = SRGB(hex: "050201")
@@ -182,6 +181,19 @@ enum NodeTint {
         orbit: Palette.hostAppDeep,
         flash: Palette.hostAppHot,
         orb: Palette.hostApp,
+        dim: 1
+    )
+
+    /// Loopback/on-this-Mac endpoints: mint, distinct from external remotes.
+    static let hostLocal = Tint(
+        ring: Palette.hostMint,
+        hot: Palette.hostIce,
+        hover: Palette.hostAppHot,
+        core: Palette.hostMint,
+        spark: SRGB(hex: "f2fff9"),
+        orbit: Palette.hostAppDeep,
+        flash: Palette.hostAppHot,
+        orb: Palette.hostTeal,
         dim: 1
     )
 

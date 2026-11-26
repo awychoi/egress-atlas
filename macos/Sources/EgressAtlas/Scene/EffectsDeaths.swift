@@ -1,8 +1,8 @@
 import Foundation
 import simd
 
-// Disappearance studies from app/src/lab/effects/death/*.js, including the
-// shared planet helper that gives all four their common body.
+// Disappearance studies, including the shared planet helper that gives all
+// four their common body.
 
 struct RockPalette {
     let rockA: SRGB

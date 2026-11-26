@@ -3,8 +3,8 @@ import Foundation
 /// Owns the live HOST pipeline: the socket monitor, the domain attributor, the
 /// Pi-hole dnsmasq stream, this Mac's interface addresses and the scope/pause
 /// lifecycle. `AtlasRuntime` keeps the published state and the scene; results
-/// travel back through the callbacks below, and a scope change resets the
-/// passed-in scene because it invalidates every body.
+/// travel back through the callbacks below. A scope change is a graph diff, so
+/// bodies retire and arrive with their own motion instead of being cleared.
 final class HostInstrument {
     /// Called on the main queue with every sampled snapshot.
     var onSnapshot: ((HostSnapshot) -> Void)?
@@ -12,15 +12,11 @@ final class HostInstrument {
     /// stream stops or recovers.
     var onStatus: ((String?) -> Void)?
 
-    private let scene: HostGlobeScene
     private var monitor: HostTrafficMonitor?
+    private var storedScopes: Set<HostScope> = [.internet, .lan, .vpn]
     private var domains: HostDomainAttributor?
     private var domainStream: PiHoleDnsmasqStream?
     private var localAddresses = HostLocalAddresses.current()
-
-    init(scene: HostGlobeScene) {
-        self.scene = scene
-    }
 
     // MARK: sockets
 
@@ -39,6 +35,7 @@ final class HostInstrument {
         }
         self.domains = domains
         self.monitor = monitor
+        monitor.enabledScopes = storedScopes
         monitor.start()
     }
 
@@ -61,23 +58,23 @@ final class HostInstrument {
 
     // MARK: scopes
 
-    var scopes: Set<HostScope> {
-        monitor?.enabledScopes ?? [.internet, .lan, .vpn]
-    }
+    var scopes: Set<HostScope> { storedScopes }
 
     func setScope(_ scope: HostScope, enabled: Bool) {
-        guard let monitor else { return }
-        var scopes = monitor.enabledScopes
-        if enabled { scopes.insert(scope) } else { scopes.remove(scope) }
-        if scopes.isEmpty { scopes.insert(.internet) }
-        monitor.enabledScopes = scopes
-        if scope == .loopback || !enabled { scene.reset() }
+        var next = storedScopes
+        if enabled { next.insert(scope) } else { next.remove(scope) }
+        if next.isEmpty { next.insert(.internet) }
+        setScopes(next)
     }
 
     func setScopes(_ scopes: Set<HostScope>) {
-        guard let monitor else { return }
-        monitor.enabledScopes = scopes.isEmpty ? [.internet] : scopes
-        scene.reset()
+        let next = scopes.isEmpty ? [.internet] : scopes
+        guard next != storedScopes else { return }
+        storedScopes = next
+        // Do not clear the scene here. The next sample diffs the graph and
+        // retires/grows bodies with their motion studies instead of popping
+        // the whole field when a scope chip is toggled.
+        monitor?.enabledScopes = next
     }
 
     // MARK: domains

@@ -16,23 +16,37 @@ struct CommandPalette: View {
     }
 
     private var hostMode: Bool { runtime.displayedGlobe == .host }
+    private var ink: Color { hostMode ? Palette.hostText.color : Palette.text.color }
+    private var ink2: Color { hostMode ? Palette.hostText2.color : Palette.text2.color }
+    private var muted: Color { hostMode ? Palette.hostMuted.color : Palette.muted.color }
+    private var faint: Color { hostMode ? Palette.hostFaint.color : Palette.faint.color }
+    private var accent: SRGB { hostMode ? Palette.host : Palette.gold }
+    private var line: Color { hostMode ? Palette.hostText.opacity(0.11) : Palette.text.opacity(0.11) }
 
     private var allItems: [Item] {
         var items: [Item] = []
         if hostMode {
             for app in runtime.hostSnapshot.apps {
+                let alias = runtime.hostAppAlias(app)
+                let name = runtime.hostAppDisplayName(app)
                 items.append(Item(
-                    id: "hostapp:\(app.id)", kind: 3, title: app.name,
+                    id: "hostapp:\(app.id)", kind: 3, title: name,
                     detail: "\(Format.dataRate(app.rxPerSecond)) in · \(Format.dataRate(app.txPerSecond)) out · \(app.socketCount) sockets",
-                    haystack: "\(app.name) \(app.detail) app service".lowercased(),
+                    haystack: "\(app.name) \(alias ?? "") \(app.detail) app service".lowercased(),
                     blocked: false
                 ))
             }
             for domain in runtime.hostSnapshot.domains {
+                let alias = runtime.hostDestinationAlias(domain)
+                let name = runtime.hostDestinationDisplayName(domain)
+                let original = runtime.hostDestinationOriginalText(domain)
+                let detail = [domain.service, domain.confidence.label,
+                              "\(domain.appIDs.count) apps", original]
+                    .compactMap { $0 }.joined(separator: " · ")
                 items.append(Item(
-                    id: "hostdomain:\(domain.id)", kind: 4, title: domain.name,
-                    detail: "\(domain.service) · \(domain.confidence.label) · \(domain.appIDs.count) apps",
-                    haystack: "\(domain.name) \(domain.service) \(domain.confidence.label) domain remote".lowercased(),
+                    id: "hostdomain:\(domain.id)", kind: 4, title: name,
+                    detail: detail,
+                    haystack: "\(domain.name) \(alias ?? "") \(domain.service) \(domain.confidence.label) domain remote".lowercased(),
                     blocked: false
                 ))
             }
@@ -65,7 +79,16 @@ struct CommandPalette: View {
             ))
         }
         }
-        let actions: [(String, String, String)] = [
+        let actions: [(String, String, String)] = hostMode ? [
+            ("open-apps", "Open apps panel", "processes moving bytes on this Mac"),
+            ("open-domains", "Open domains panel", "remote endpoints and inferred names"),
+            ("host-pause", runtime.hostPaused ? "Resume host monitoring" : "Pause host monitoring", "socket sampling"),
+            ("settings", "Open host settings", "monitor, scope, domain source"),
+            ("reset-camera", "Reset camera", "return to the opening view"),
+            ("labels-all", "Show all labels", "keep every host body labelled"),
+            ("focus-dns", "Focus the DNS globe", "warm network instrument"),
+            ("focus-host", "Focus the HOST globe", "cold this-Mac instrument"),
+        ] : [
             ("open-network", "Open network panel", "devices, destinations, clients"),
             ("open-queries", "Open queries panel", "the live query feed"),
             ("filter-all", "Show all outcomes", "remove the outcome filter"),
@@ -77,7 +100,7 @@ struct CommandPalette: View {
             ("reset-camera", "Reset camera", "return to the opening view"),
             ("labels-all", "Show all labels", "keep every orb labelled"),
             ("focus-dns", "Focus the DNS globe", "warm network instrument"),
-            ("focus-host", "Focus the HOST globe", "cool this-Mac instrument"),
+            ("focus-host", "Focus the HOST globe", "cold this-Mac instrument"),
             ("settings-host", "Open host settings", "monitor, scope, domain source"),
             ("host-pause", runtime.hostPaused ? "Resume host monitoring" : "Pause host monitoring", "socket sampling"),
         ]
@@ -116,10 +139,11 @@ struct CommandPalette: View {
                     ScrollView(.vertical, showsIndicators: true) {
                         VStack(spacing: 0) {
                             if filtered.isEmpty {
-                                Text("NO DEVICE OR DESTINATION MATCHES THAT SEARCH.")
+                                Text(hostMode ? "NO APP OR DOMAIN MATCHES THAT SEARCH."
+                                               : "NO DEVICE OR DESTINATION MATCHES THAT SEARCH.")
                                     .font(.atlasMono(8, .regular))
                                     .tracking(8 * 0.06)
-                                    .foregroundColor(Palette.faint.color)
+                                    .foregroundColor(faint)
                                     .padding(.vertical, 30)
                             } else {
                                 if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -150,7 +174,10 @@ struct CommandPalette: View {
                 .background(
                     ZStack {
                         VisualEffectView(material: .hudWindow, blending: .withinWindow).opacity(0.6)
-                        LinearGradient(stops: [
+                        LinearGradient(stops: hostMode ? [
+                            .init(color: Color.rgba("0c1b22", 0.96), location: 0),
+                            .init(color: Color.rgba("050d11", 0.97), location: 1),
+                        ] : [
                             .init(color: Color.rgba("2a170e", 0.94), location: 0),
                             .init(color: Color.rgba("0c0604", 0.96), location: 1),
                         ], startPoint: .topLeading, endPoint: .bottomTrailing)
@@ -158,9 +185,10 @@ struct CommandPalette: View {
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(Palette.gold.opacity(0.2), lineWidth: 1))
+                    .strokeBorder(accent.opacity(0.2), lineWidth: 1))
                 .overlay(alignment: .top) {
-                    Rectangle().fill(Color.rgba("fff1dd", 0.06)).frame(height: 1).padding(.horizontal, 1).padding(.top, 1)
+                    Rectangle().fill(hostMode ? Color.rgba("dff9ff", 0.06) : Color.rgba("fff1dd", 0.06))
+                        .frame(height: 1).padding(.horizontal, 1).padding(.top, 1)
                 }
                 .shadow(color: .black.opacity(0.58), radius: 45, x: 0, y: 28)
                 .padding(.top, geo.size.height * 0.18)
@@ -175,12 +203,13 @@ struct CommandPalette: View {
 
     private var inputRow: some View {
         HStack(spacing: 9) {
-            SearchGlyph(size: 15, color: Palette.gold.opacity(0.8))
-            TextField("Search devices, domains, categories, or actions…", text: $query)
+            SearchGlyph(size: 15, color: accent.color.opacity(0.8))
+            TextField(hostMode ? "Search apps, domains, or actions…"
+                               : "Search devices, domains, categories, or actions…", text: $query)
                 .textFieldStyle(.plain)
                 .font(.atlasSans(14, .regular))
                 .tracking(-0.14)
-                .foregroundColor(Palette.text.color)
+                .foregroundColor(ink)
                 .focused($focused)
                 .onChange(of: query) { _ in active = 0 }
                 .onSubmit { chooseActive() }
@@ -189,15 +218,15 @@ struct CommandPalette: View {
                 .onKeyPress(.escape) { runtime.commandOpen = false; return .handled }
             Text("ESC")
                 .font(.atlasMono(6.5, .regular))
-                .foregroundColor(Palette.faint.color)
+                .foregroundColor(faint)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 2)
                 .overlay(RoundedRectangle(cornerRadius: 3)
-                    .strokeBorder(Palette.text.opacity(0.062), lineWidth: 1))
+                    .strokeBorder(line, lineWidth: 1))
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 13)
-        .overlay(alignment: .bottom) { Hairline(color: Palette.text.opacity(0.11)) }
+        .overlay(alignment: .bottom) { Hairline(color: line) }
     }
 
     private func group(_ title: String, items: [Item]) -> some View {
@@ -207,7 +236,7 @@ struct CommandPalette: View {
                     Text(title)
                         .font(.atlasMono(6.3, .regular))
                         .tracking(6.3 * 0.14)
-                        .foregroundColor(Palette.faint.color)
+                        .foregroundColor(faint)
                     Spacer()
                 }
                 .padding(.horizontal, 9)
@@ -224,25 +253,25 @@ struct CommandPalette: View {
                             } else if item.kind == 1 {
                                 AtlasDestinationMark(color: item.blocked ? Palette.coral.color : Palette.gold.color, size: 18)
                             } else if item.kind == 3 {
-                                AtlasDeviceMark(color: Palette.host.color, size: 18)
+                                AtlasDeviceMark(color: Palette.hostApp.color, size: 18)
                             } else if item.kind == 4 {
-                                AtlasDestinationMark(color: Palette.hostGlow.color, size: 18)
+                                AtlasDestinationMark(color: Palette.hostRemote.color, size: 18)
                             } else {
                                 Image(systemName: "return")
                                     .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(Palette.gold.color)
+                                    .foregroundColor(accent.color)
                                     .frame(width: 18, height: 18)
                             }
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(item.title)
                                     .font(.atlasSans(11, .medium))
                                     .tracking(-0.1)
-                                    .foregroundColor(Palette.text2.color)
+                                    .foregroundColor(ink2)
                                     .lineLimit(1)
                                 Text(item.detail)
                                     .font(.atlasMono(6.8, .regular))
                                     .tracking(6.8 * 0.04)
-                                    .foregroundColor(Palette.faint.color)
+                                    .foregroundColor(faint)
                                     .lineLimit(1)
                             }
                             Spacer(minLength: 4)
@@ -252,14 +281,14 @@ struct CommandPalette: View {
                                        : (item.kind == 4 ? "REMOTE" : "ACTION"))))
                                 .font(.atlasMono(6.2, .regular))
                                 .tracking(6.2 * 0.1)
-                                .foregroundColor(Palette.faint.color)
+                                .foregroundColor(faint)
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 7)
                         .background(RoundedRectangle(cornerRadius: 5)
-                            .fill(index == active ? Palette.gold.opacity(0.065) : .clear))
+                            .fill(index == active ? accent.opacity(hostMode ? 0.08 : 0.065) : .clear))
                         .overlay(RoundedRectangle(cornerRadius: 5)
-                            .strokeBorder(index == active ? Palette.gold.opacity(0.14) : .clear, lineWidth: 1))
+                            .strokeBorder(index == active ? accent.opacity(hostMode ? 0.16 : 0.14) : .clear, lineWidth: 1))
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(AtlasPlainButtonStyle())
@@ -279,7 +308,7 @@ struct CommandPalette: View {
         }
         .font(.atlasMono(6.2, .regular))
         .tracking(6.2 * 0.08)
-        .foregroundColor(Palette.faint.color)
+        .foregroundColor(faint)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -287,7 +316,7 @@ struct CommandPalette: View {
     }
 
     private var dot: some View {
-        Circle().fill(Palette.faint.color).frame(width: 2, height: 2)
+        Circle().fill(faint).frame(width: 2, height: 2)
     }
 
     private func move(_ delta: Int) {
@@ -305,14 +334,16 @@ struct CommandPalette: View {
         if item.kind == 2 {
             let action = String(item.id.dropFirst("action:".count))
             switch action {
-            case "open-network": runtime.leftRailOpen = true
-            case "open-queries": runtime.rightRailOpen = true
+            case "open-network", "open-apps": runtime.leftRailOpen = true
+            case "open-queries", "open-domains": runtime.rightRailOpen = true
             case "filter-all": runtime.setFilter(.all)
             case "filter-blocked": runtime.setFilter(.blocked)
             case "pause": runtime.setPaused(!runtime.paused)
             case "replay": runtime.enterReplay(hours: 6)
             case "live": runtime.goLive()
-            case "settings": runtime.settingsTab = .source; runtime.settingsOpen = true
+            case "settings":
+                runtime.settingsTab = hostMode ? .host : .source
+                runtime.settingsOpen = true
             case "reset-camera": runtime.resetCamera()
             case "labels-all": runtime.setLabelMode(.all)
             case "focus-dns": runtime.focusGlobe(.dns)
@@ -344,6 +375,6 @@ struct CommandPalette: View {
                 runtime.focusSelection()
             }
         }
-        runtime.showToast("Tracing \(item.title)", tone: .signal)
+        runtime.showToast(hostMode ? "Inspecting \(item.title)" : "Tracing \(item.title)", tone: .signal)
     }
 }

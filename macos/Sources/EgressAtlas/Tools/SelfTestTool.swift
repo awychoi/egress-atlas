@@ -39,6 +39,10 @@ enum SelfTestTool {
         print("source queries=\(q) totalLive=\(src.totalLive) qps=\(src.getQps()) recent=\(src.recent.count)")
         let hostReport = HostChecks.run()
         print("host checks failed=\(hostReport.failures)")
+        let hostMotionFailed = HostGlobeScene.motionChecks()
+        print("host motion checks failed=\(hostMotionFailed)")
+        let demoHostFailed = runtime.debugDemoHostChecks()
+        print("demo host checks failed=\(demoHostFailed)")
         guard let device = MTLCreateSystemDefaultDevice() else {
             print("no Metal device"); exit(2)
         }

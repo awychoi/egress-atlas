@@ -24,6 +24,8 @@ enum AtlasPreferences {
     private static let hitPlaneKey = "atlas.hitPlane"
     private static let deviceAliasesKey = "atlas.deviceAliases"
     private static let destinationAliasesKey = "atlas.destinationAliases"
+    private static let hostAppAliasesKey = "atlas.hostAppAliases"
+    private static let hostDestinationAliasesKey = "atlas.hostDestinationAliases"
     private static let showAliasWithAddressKey = "atlas.showAliasWithAddress"
     private static let activeGlobeKey = "atlas.activeGlobe"
 
@@ -93,6 +95,18 @@ enum AtlasPreferences {
     static var destinationAliases: [String: String] {
         get { aliases(destinationAliasesKey) }
         set { setAliases(newValue, forKey: destinationAliasesKey) }
+    }
+
+    /// Local display names for HOST apps/services, keyed by stable host app id.
+    static var hostAppAliases: [String: String] {
+        get { aliases(hostAppAliasesKey) }
+        set { setAliases(newValue, forKey: hostAppAliasesKey) }
+    }
+
+    /// Local display names for HOST destinations, keyed by domain or IP:port.
+    static var hostDestinationAliases: [String: String] {
+        get { aliases(hostDestinationAliasesKey) }
+        set { setAliases(newValue, forKey: hostDestinationAliasesKey) }
     }
 
     /// When true, destination cards append the original domain to an alias.

@@ -1,10 +1,9 @@
 import Foundation
 import simd
 
-/// Port of app/src/lab/WireView.js. The curve leaves the shell along the
-/// device normal, splays, then dives to the destination. The signal colour and
-/// pulse are evaluated on the CPU per vertex so the whole 49-wire field is a
-/// single additive line batch.
+/// The wire curve leaves the shell along the device normal, splays, then
+/// dives to the destination. The signal colour and pulse are evaluated on the
+/// CPU per vertex so the whole wire field is a single additive line batch.
 final class WireView {
     var edgeId: String = ""
     // Host graphs churn as apps and domains appear/disappear. The wire owns
@@ -24,6 +23,13 @@ final class WireView {
     var hidden = false
     var signalActive = false
     var hostTone = false
+    /// Life-cycle fade for host wires. New wires grow in from zero and retired
+    /// wires dissolve instead of vanishing in the same frame as their topology
+    /// change.
+    var visibility: Float = 1
+    var retiring = false
+    /// Endpoint presence, so a wire fades with the body it belongs to.
+    var endpointFade: Float = 1
     /// Fraction of the curve currently drawn. Normal wires are 1; the
     /// reappearance pulse grows a wire from the device to its destination.
     var reveal: Float = 1
@@ -79,8 +85,9 @@ final class WireView {
     func setSignalActive(_ active: Bool) { signalActive = active }
 
     func appendDraw(_ draw: DrawList, elapsed: Float, detail: Float = 1) {
-        guard !hidden, reveal > 0.001, points.count > 1, curve != nil else { return }
-        let wireAlpha = smoothstep(0.40, 0.78, detail)
+        let lifeAlpha = visibility * endpointFade
+        guard !hidden, lifeAlpha > 0.001, reveal > 0.001, points.count > 1, curve != nil else { return }
+        let wireAlpha = smoothstep(0.40, 0.78, detail) * lifeAlpha
         guard wireAlpha > 0.01 else { return }
         let progress = (elapsed * 0.075 + offset).truncatingRemainder(dividingBy: 1)
         let pulse: Float = signalActive ? 0.015 : 0.32 * dim

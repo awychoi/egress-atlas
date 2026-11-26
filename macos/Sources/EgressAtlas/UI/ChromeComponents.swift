@@ -5,11 +5,10 @@ enum AtlasRenderFlags {
     static var snapshot = false
 }
 
-// Shared chrome primitives. Sizes and colours come straight from
-// app/src/styles.css.
+// Shared chrome primitives and layout constants.
 
-/// One legibility floor for the whole native chrome. The web mirror uses the
-/// same idea; the reference's 5–8 pt instrument labels are not readable at arm's
+/// One legibility floor for the whole native chrome. The 5–8 pt instrument
+/// labels are not readable at arm's
 /// length. Layout tokens were widened to match.
 enum AtlasType {
     static let scale: CGFloat = 1.15
@@ -178,6 +177,8 @@ struct MiniActionButton: View {
     var title: String
     var primary = false
     var danger = false
+    var accent: SRGB = Palette.gold
+    var dangerTone: SRGB = Palette.coral
     var action: () -> Void
     @State private var hover = false
 
@@ -186,20 +187,20 @@ struct MiniActionButton: View {
             Text(title.uppercased())
                 .font(.atlasMono(6.8, .regular))
                 .tracking(6.8 * 0.08)
-                .foregroundColor(primary ? Color.rgba("241108", 1) : (danger ? Palette.coral.color : Palette.text2.color))
+                .foregroundColor(primary ? Color.rgba("241108", 1) : (danger ? dangerTone.color : Palette.text2.color))
                 .padding(.horizontal, 9)
                 .padding(.vertical, 7)
                 .background(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(primary ? Palette.gold.color
-                              : (hover ? Palette.gold.opacity(0.1)
+                        .fill(primary ? accent.color
+                              : (hover ? accent.opacity(0.1)
                                  : Color.rgba("120a06", 0.55)))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .strokeBorder(primary ? Color.rgba("ffdb8f", 0.8)
-                                      : (danger ? Palette.coral.opacity(0.26)
-                                         : (hover ? Palette.gold.opacity(0.28) : Palette.text.opacity(0.11))),
+                        .strokeBorder(primary ? accent.opacity(0.8)
+                                      : (danger ? dangerTone.opacity(0.26)
+                                         : (hover ? accent.opacity(0.28) : Palette.text.opacity(0.11))),
                                       lineWidth: 1)
                 )
         }
@@ -211,6 +212,9 @@ struct MiniActionButton: View {
 struct SegmentButton: View {
     var title: String
     var active: Bool
+    var accent: SRGB = Palette.gold
+    var inactive: SRGB = Palette.dim
+    var activeText: SRGB = Palette.gold
     var action: () -> Void
     @State private var hover = false
     var body: some View {
@@ -218,13 +222,13 @@ struct SegmentButton: View {
             Text(title.uppercased())
                 .font(.atlasMono(6.8, .regular))
                 .tracking(6.8 * 0.04)
-                .foregroundColor(active ? Palette.gold.color : (hover ? Palette.text2.color : Palette.dim.color))
+                .foregroundColor(active ? activeText.color : (hover ? Palette.text2.color : inactive.color))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
                 .padding(.horizontal, 4)
                 .background(
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(active ? Palette.gold.opacity(0.09) : .clear)
+                        .fill(active ? accent.opacity(0.09) : .clear)
                 )
         }
         .buttonStyle(AtlasPlainButtonStyle())
@@ -235,19 +239,20 @@ struct SegmentButton: View {
 struct TinyToggle: View {
     @Binding var isOn: Bool
     var label: String = "Toggle"
+    var tone: SRGB = Palette.signal
     var body: some View {
         Button {
             isOn.toggle()
         } label: {
             ZStack(alignment: isOn ? .trailing : .leading) {
                 Capsule()
-                    .fill(isOn ? Palette.signal.opacity(0.1) : Color.rgba("0b0603", 0.6))
-                    .overlay(Capsule().strokeBorder(isOn ? Palette.signal.opacity(0.42) : Palette.text.opacity(0.2), lineWidth: 1))
+                    .fill(isOn ? tone.opacity(0.1) : Color.rgba("0b0603", 0.6))
+                    .overlay(Capsule().strokeBorder(isOn ? tone.opacity(0.42) : Palette.text.opacity(0.2), lineWidth: 1))
                     .frame(width: 30, height: 16)
                 Circle()
-                    .fill(isOn ? Palette.signal.color : Palette.dim.color)
+                    .fill(isOn ? tone.color : Palette.dim.color)
                     .frame(width: 12, height: 12)
-                    .shadow(color: isOn ? Palette.signal.opacity(0.55) : .clear, radius: 3.5)
+                    .shadow(color: isOn ? tone.opacity(0.55) : .clear, radius: 3.5)
                     .padding(1)
             }
             .frame(width: 42, height: 30)
@@ -329,15 +334,18 @@ struct AtlasSlider: View {
 struct SectionKicker: View {
     var title: String
     var value: String?
+    var color: Color = Palette.gold.color
+    var valueColor: Color = Palette.faint.color
+
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
-            Eyebrow(text: title, size: 7.5, color: Palette.gold.color, trackingEm: 0.14)
+            Eyebrow(text: title, size: 7.5, color: color, trackingEm: 0.14)
             Spacer(minLength: 8)
             if let value {
                 Text(value)
                     .font(.atlasMono(6, .regular))
                     .tracking(6 * 0.04)
-                    .foregroundColor(Palette.faint.color)
+                    .foregroundColor(valueColor)
             }
         }
     }

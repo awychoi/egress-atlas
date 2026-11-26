@@ -15,17 +15,25 @@ final class HostTrafficMonitor {
     /// queue.
     var domainLookup: ((_ host: String, _ port: Int, _ at: Date) -> HostDomainMatch?)?
 
+    /// Lock-backed so SwiftUI never waits on the sampler queue, which can be
+    /// inside nettop for hundreds of milliseconds.
     var enabledScopes: Set<HostScope> {
-        get { queue.sync { scopes } }
+        get {
+            scopeLock.lock()
+            defer { scopeLock.unlock() }
+            return storedScopes
+        }
         set {
+            scopeLock.lock()
+            storedScopes = newValue
+            scopeLock.unlock()
             queue.async { [weak self] in
-                guard let self else { return }
-                self.scopes = newValue
-                self.publishCurrent()
+                self?.publishCurrent()
             }
         }
     }
-    private var scopes: Set<HostScope> = [.internet, .lan, .vpn]
+    private let scopeLock = NSLock()
+    private var storedScopes: Set<HostScope> = [.internet, .lan, .vpn]
 
     private let queue = DispatchQueue(label: "atlas.host.sampler", qos: .utility)
     private var timer: Timer?
@@ -179,7 +187,7 @@ final class HostTrafficMonitor {
             guard drx > 0 || dtx > 0 else { continue }
 
             let scope = HostScope.classify(socket.remoteAddress)
-            guard scopes.contains(scope) else { continue }
+            guard enabledScopes.contains(scope) else { continue }
             let identity = identity(for: socket.pid, scope: scope)
             let endpointID = endpointKey(appID: identity.appID, socket: socket)
             let service = HostServiceNames.name(port: socket.remotePort, proto: socket.proto)
@@ -386,7 +394,7 @@ final class HostTrafficMonitor {
             sessionTx: sessionTx,
             available: available,
             note: note,
-            enabledScopes: scopes
+            enabledScopes: enabledScopes
         )
         self.snapshot = snapshot
         DispatchQueue.main.async { [weak self] in

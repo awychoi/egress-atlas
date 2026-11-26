@@ -3,11 +3,49 @@ import AppKit
 import Metal
 
 private func applyGlobeArgs(args: [String], runtime: AtlasRuntime) {
+    if args.contains("--demo-source") && !runtime.hostDemoActive {
+        runtime.useDemoSource(rememberChoice: false, preview: true)
+    }
+    if let index = args.firstIndex(of: "--host-style"), index + 1 < args.count {
+        runtime.debugHostStyle(args[index + 1])
+    }
     if let index = args.firstIndex(of: "--deck"), index + 1 < args.count,
        let progress = Float(args[index + 1]) {
         runtime.debugShowDeck(progress: progress)
     } else if args.contains("--host-globe") {
-        runtime.debugShowHostGlobe()
+        runtime.debugShowHostGlobe(includeLocal: args.contains("--host-local"),
+                                   prime: !args.contains("--host-animate"))
+        if let index = args.firstIndex(of: "--host-select"), index + 1 < args.count {
+            let select = args[index + 1]
+            if select.hasPrefix("app=") {
+                runtime.selectHost(.app(String(select.dropFirst(4))))
+            } else if select.hasPrefix("domain=") {
+                runtime.selectHost(.domain(String(select.dropFirst(7))))
+            } else if select.hasPrefix("app:") || select.hasPrefix("svc:") {
+                runtime.selectHost(.app(select))
+            } else {
+                runtime.selectHost(.domain(select))
+            }
+        }
+        if let index = args.firstIndex(of: "--host-alias-app"), index + 1 < args.count,
+           let app = runtime.hostScene.app(for: (runtime.hostSelection?.appID ?? "")) {
+            runtime.setHostAppAlias(args[index + 1], for: app)
+        }
+        if let index = args.firstIndex(of: "--host-alias-domain"), index + 1 < args.count,
+           let domain = runtime.hostScene.domain(for: (runtime.hostSelection?.domainID ?? "")) {
+            runtime.setHostDestinationAlias(args[index + 1], for: domain)
+        }
+        if args.contains("--host-blast") {
+            runtime.debugHostArrival("d:github.com")
+        } else if args.contains("--host-pulse") {
+            runtime.debugHostArrival("d:localhost:8765")
+        } else if args.contains("--host-retire") {
+            runtime.debugHostRetire("d:github.com")
+        } else if args.contains("--host-app-impact") {
+            runtime.debugHostAppImpact("app:com.brave.Browser")
+        } else if args.contains("--host-retire-app") {
+            runtime.debugHostRetireApp("app:com.brave.Browser")
+        }
     }
 }
 
@@ -86,6 +124,9 @@ enum SnapshotTool {
         let seconds = Float(Double(value(after: "--seconds", in: args) ?? "6.0") ?? 6.0)
         let scale = CGFloat(Double(value(after: "--scale", in: args) ?? "1.75") ?? 1.75)
         let runtime = AtlasRuntime()
+        if args.contains("--demo-source") {
+            runtime.useDemoSource(rememberChoice: false, preview: true)
+        }
         if let connectURL = value(after: "--connect-url", in: args) {
             runtime.connectPiHole(url: connectURL,
                                   password: value(after: "--connect-password", in: args) ?? "",

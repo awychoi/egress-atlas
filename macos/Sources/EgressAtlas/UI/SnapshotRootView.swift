@@ -40,9 +40,9 @@ struct SnapshotRootView: View {
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
-            .background(Palette.deep.color)
+            .background(runtime.displayedGlobe == .host ? Palette.hostBg.color : Palette.deep.color)
         }
-        .background(Palette.deep.color)
+        .background(runtime.displayedGlobe == .host ? Palette.hostBg.color : Palette.deep.color)
         .preferredColorScheme(.dark)
     }
 }

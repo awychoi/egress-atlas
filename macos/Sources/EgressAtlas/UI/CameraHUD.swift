@@ -7,6 +7,12 @@ struct CameraHUD: View {
     @ObservedObject var runtime: AtlasRuntime
     var compact = false
 
+    private var host: Bool { runtime.displayedGlobe == .host }
+    private var accent: Color { host ? Palette.host.color : Palette.gold.color }
+    private var inactive: Color { host ? Palette.hostMeta.color : Palette.dim.color }
+    private var glyphColor: Color { host ? Palette.hostMuted.color : Palette.muted.color }
+    private var separatorColor: Color { host ? Palette.hostText.opacity(0.08) : Palette.text.opacity(0.08) }
+
     var body: some View {
         HStack(spacing: 1) {
             glyph("minus.magnifyingglass", help: "Zoom out (−)") { runtime.zoomBy(1.22) }
@@ -33,18 +39,18 @@ struct CameraHUD: View {
             HStack(spacing: 4) {
                 Image(systemName: "arrow.triangle.2.circlepath")
                     .font(.system(size: 9.5, weight: .regular))
-                    .foregroundColor(runtime.spinEnabled ? Palette.gold.color : Palette.dim.color)
+                    .foregroundColor(runtime.spinEnabled ? accent : inactive)
                 if !compact {
                     Text("AUTO")
                         .font(.atlasMono(6.4, .regular))
                         .tracking(6.4 * 0.1)
-                        .foregroundColor(runtime.spinEnabled ? Palette.gold.color : Palette.dim.color)
+                        .foregroundColor(runtime.spinEnabled ? accent : inactive)
                 }
             }
             .padding(.horizontal, 5)
             .frame(height: 22)
             .background(RoundedRectangle(cornerRadius: 4)
-                .fill(runtime.spinEnabled ? Palette.gold.opacity(0.09) : .clear))
+                .fill(runtime.spinEnabled ? accent.opacity(0.09) : .clear))
         }
         .buttonStyle(AtlasPlainButtonStyle())
         .help("Auto-orbit the camera when idle (O)")
@@ -55,7 +61,7 @@ struct CameraHUD: View {
         Button(action: action) {
             Image(systemName: name)
                 .font(.system(size: 9.5, weight: .regular))
-                .foregroundColor(Palette.muted.color)
+                .foregroundColor(glyphColor)
                 .frame(width: 24, height: 22)
                 .contentShape(Rectangle())
         }
@@ -66,7 +72,7 @@ struct CameraHUD: View {
 
     private var separator: some View {
         Rectangle()
-            .fill(Palette.text.opacity(0.08))
+            .fill(separatorColor)
             .frame(width: 1, height: 12)
             .padding(.horizontal, 1)
     }

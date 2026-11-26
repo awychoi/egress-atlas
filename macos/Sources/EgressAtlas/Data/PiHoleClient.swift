@@ -131,8 +131,8 @@ final class PiHoleClient {
         do {
             return try await fetchQueries(seconds: seconds, limit: limit)
         } catch let error as PiHoleError {
-            // A stale session is the common 401; refresh once, exactly like
-            // the web bridge, then report the second failure.
+            // A stale session is the common 401; refresh once, then report
+            // the second failure.
             if case .http(let message) = error, message.contains("401"), !password.isEmpty {
                 try await authenticate(force: true)
                 return try await fetchQueries(seconds: seconds, limit: limit)

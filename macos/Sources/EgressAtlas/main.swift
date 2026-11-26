@@ -14,6 +14,10 @@ struct EgressAtlasMain {
             SelfTestTool.run()
             return
         }
+        if args.contains("--scene-probe") {
+            StateProbeTool.run(args: args)
+            return
+        }
         if args.contains("--host-test") {
             HostTestTool.run(args: args)
             return

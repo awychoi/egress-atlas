@@ -1,9 +1,8 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// Ports of the GLSL in app/src/lab and the Three.js post-processing passes.
-// The scene is rendered into a linear HDR target and tone mapped only in the
-// final composite, exactly like the web's EffectComposer + OutputPass chain.
+// Scene, post-processing and final-composite shaders. The scene renders into
+// a linear HDR target and is tone mapped only in the final composite.
 
 constant float PI = 3.14159265358979323846;
 constant float TAU = 6.28318530717958647692;
@@ -779,7 +778,7 @@ vertex ScanOut scan_vertex(uint vid [[vertex_id]],
     float2 corners[6] = { float2(-1.0, -1.0), float2(1.0, -1.0), float2(-1.0, 1.0),
                           float2(-1.0, 1.0), float2(1.0, -1.0), float2(1.0, 1.0) };
     float2 c = corners[vid];
-    // Horizontal plane: local XY of the web plane becomes XZ.
+    // Horizontal plane: local XY of the source plane becomes XZ.
     float4 local = float4(c.x, 0.0, c.y, 1.0);
     ScanOut out;
     out.position = frame.viewProj * (u.model * local);
@@ -908,7 +907,7 @@ fragment float4 dof_fragment(PostOut in [[stage_in]],
     constexpr sampler smp(filter::linear, address::clamp_to_edge);
     float2 uv = in.uv;
     // Analytic scene depth: the front surface of the globe. This mirrors the
-    // focal model used by the web's depth pass without paying for a second
+    // focal model used by the depth pass without paying for a second
     // scene render.
     float2 ndc = uv * 2.0 - 1.0;
     ndc.y = -ndc.y;
@@ -1020,7 +1019,7 @@ fragment float4 bloom_composite_fragment(PostOut in [[stage_in]],
     return float4(bloom, 1.0);
 }
 
-// ── final composite: output pass + vignette shader + CSS atmosphere ──────
+// ── final composite: output pass + vignette + atmosphere ─────────────────
 
 fragment float4 final_fragment(PostOut in [[stage_in]],
                                texture2d<float> dofTex [[texture(0)]],
@@ -1035,7 +1034,7 @@ fragment float4 final_fragment(PostOut in [[stage_in]],
     color = acesFilm(color, 0.98);
     color = linearToSRGB(color);
 
-    // vignetteShader (applied after OutputPass in the web composer)
+    // Vignette applied after the composite
     float2 p = uv - 0.5;
     p.x *= u.params.z / max(1.0, u.params.w);
     float vig = 1.0 - smoothstep(0.3, 1.06, length(p));
